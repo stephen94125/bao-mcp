@@ -9,6 +9,7 @@ use crate::{
 };
 use axum::{
     Json, Router,
+    body::{Body, to_bytes},
     extract::{Request, State},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -23,7 +24,12 @@ use rmcp::{
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{borrow::Cow, sync::Arc, time::Instant};
+use std::{
+    borrow::Cow,
+    error::Error as _,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::sync::Semaphore;
 const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
 
@@ -32,6 +38,7 @@ pub struct App {
     pub backend: Backend,
     pub discovery: Discovery,
     requests: Arc<Semaphore>,
+    body_timeout: Duration,
 }
 impl App {
     pub fn new(config: &Config) -> Result<Self> {
@@ -53,6 +60,7 @@ impl App {
             backend,
             discovery,
             requests: Arc::new(Semaphore::new(64)),
+            body_timeout: config.body_timeout,
         })
     }
 }
@@ -92,6 +100,39 @@ async fn authenticate(State(app): State<App>, mut request: Request, next: Next) 
         return failure(e);
     }
     request.extensions_mut().insert(credential);
+    if request.method() == http::Method::POST {
+        // Bound only inbound collection. Timing out downstream execution could
+        // cancel an already-issued mutation and obscure its outcome.
+        let (parts, body) = request.into_parts();
+        let bytes =
+            match tokio::time::timeout(app.body_timeout, to_bytes(body, MAX_REQUEST_BODY_BYTES))
+                .await
+            {
+                Ok(Ok(bytes)) => bytes,
+                Ok(Err(error)) => {
+                    let oversized = error
+                        .source()
+                        .is_some_and(|source| source.is::<http_body_util::LengthLimitError>());
+                    return failure(if oversized {
+                        Error::new(
+                            413,
+                            "request_too_large",
+                            "The MCP request exceeded the 8 MiB limit",
+                        )
+                    } else {
+                        Error::invalid("The MCP request body could not be read")
+                    });
+                }
+                Err(_) => {
+                    return failure(Error::new(
+                        408,
+                        "request_body_timeout",
+                        "The MCP request body was not received in time",
+                    ));
+                }
+            };
+        request = Request::from_parts(parts, Body::from(bytes));
+    }
     next.run(request).await
 }
 fn identity(ctx: &RequestContext<RoleServer>) -> std::result::Result<Credential, McpError> {

@@ -18,6 +18,7 @@ Bao MCP.
 | `BAO_CACERT` | system trust | Optional PEM CA bundle for the Bao connection |
 | `BAO_SKIP_VERIFY` | `false` | `true` or `1` bypasses Bao HTTPS certificate and hostname verification; `false` or `0` keeps verification enabled |
 | `MCP_LISTEN` | `127.0.0.1:8000` | MCP listener address |
+| `MCP_BODY_TIMEOUT_SECONDS` | `30` | Deadline to receive a complete MCP POST body, at most 300 seconds |
 | `MCP_ALLOWED_HOSTS` | loopback hosts | Additional comma-separated HTTP Host patterns |
 | `MCP_ALLOWED_ORIGINS` | loopback HTTP origins | Additional comma-separated browser origins |
 | `CACHE_PATH` | `cache.db` | SQLite tool-discovery cache; parent directory must exist |
@@ -58,6 +59,9 @@ enable it only when you accept that loss of peer verification. The option also
 accepts `1`/`0`; other values stop startup.
 The HTTP request limit is 8 MiB and the Bao response limit is 8 MiB. Upstream
 redirects and automatic retries are disabled.
+Incomplete POST bodies return HTTP 408 after `MCP_BODY_TIMEOUT_SECONDS`, releasing
+their request slots. This deadline ends before tool execution starts; it does not
+cancel an already-dispatched Bao mutation. Body-size violations return HTTP 413.
 
 ## Token scope and discovery
 

@@ -13,6 +13,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+use tokio_stream::StreamExt;
 use tower::ServiceExt;
 #[derive(Clone, Default)]
 struct Counts {
@@ -61,6 +62,9 @@ async fn upstream(State(counts): State<Counts>, request: Request) -> axum::respo
             counts.requests.fetch_add(1, Ordering::SeqCst);
             if request.method() == http::Method::PUT {
                 let bytes = request.into_body().collect().await.unwrap().to_bytes();
+                if serde_json::from_slice::<Value>(&bytes).unwrap()["slow"] == true {
+                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                }
                 return Json(json!({"data":{"received_bytes":bytes.len()}})).into_response();
             }
             Json(json!({"data":{"data":{"client":if token.ends_with('a'){"A"}else{"B"}},"metadata":{"version":1}}})).into_response()
@@ -81,6 +85,16 @@ async fn fixture() -> (
     Counts,
     tokio::task::JoinHandle<()>,
 ) {
+    fixture_with_body_timeout(30).await
+}
+async fn fixture_with_body_timeout(
+    seconds: u64,
+) -> (
+    tempfile::TempDir,
+    Router,
+    Counts,
+    tokio::task::JoinHandle<()>,
+) {
     let counts = Counts::default();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -93,6 +107,7 @@ async fn fixture() -> (
     let config = Config::from_values(|key| match key {
         "BAO_ADDR" => Some(format!("http://{addr}")),
         "CACHE_PATH" => Some(path.to_string_lossy().into_owned()),
+        "MCP_BODY_TIMEOUT_SECONDS" => Some(seconds.to_string()),
         _ => None,
     })
     .unwrap();
@@ -278,4 +293,71 @@ async fn request_body_limit_accepts_eight_mib() {
 async fn request_body_limit_rejects_larger_bodies() {
     let size = 8 * 1024 * 1024 + 1;
     request_body_cases(&[(size, false, false), (size, true, false)], 0).await;
+}
+
+#[tokio::test]
+async fn incomplete_bodies_time_out_and_release_all_request_slots() {
+    let (_temp, app, counts, handle) = fixture_with_body_timeout(2).await;
+    let (status, _) = rpc(&app, Some("synthetic-client-a"), "tools/list", json!({})).await;
+    assert_eq!(status, 200);
+    let started = Arc::new(AtomicUsize::new(0));
+    let mut pending = Vec::new();
+    for i in 0..64 {
+        let started = started.clone();
+        let first = if i % 2 == 0 { "" } else { "{\"jsonrpc\":" };
+        let stream = tokio_stream::iter([Ok::<_, std::io::Error>(axum::body::Bytes::from_static(
+            first.as_bytes(),
+        ))])
+        .map(move |chunk| {
+            started.fetch_add(1, Ordering::SeqCst);
+            chunk
+        })
+        .chain(tokio_stream::pending());
+        let request = http::Request::builder()
+            .method("POST")
+            .uri(if i % 2 == 0 { "/mcp" } else { "/mcp/" })
+            .header("host", "localhost")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("authorization", "Bearer synthetic-client-a")
+            .body(axum::body::Body::from_stream(stream))
+            .unwrap();
+        pending.push(tokio::spawn(app.clone().oneshot(request)));
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while started.load(Ordering::SeqCst) < 64 {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let (status, _) = rpc(&app, Some("synthetic-client-a"), "tools/list", json!({})).await;
+    assert_eq!(status, 429);
+    for request in pending {
+        assert_eq!(request.await.unwrap().unwrap().status(), 408);
+    }
+    let (status, _) = rpc(&app, Some("synthetic-client-a"), "tools/list", json!({})).await;
+    assert_eq!(status, 200, "Timed-out bodies must release every permit");
+    assert_eq!(counts.requests.load(Ordering::SeqCst), 0);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn body_deadline_does_not_cancel_a_dispatched_mutation() {
+    let (_temp, app, counts, handle) = fixture_with_body_timeout(1).await;
+    let (status, response) = rpc(
+        &app,
+        Some("synthetic-client-a"),
+        "tools/call",
+        json!({
+            "name":"bao_request", "arguments":{
+                "operation":"write", "path":"secret/data/allowed", "data":{"slow":true}
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_ne!(response["result"]["isError"], true);
+    assert_eq!(counts.requests.load(Ordering::SeqCst), 1);
+    handle.abort();
 }

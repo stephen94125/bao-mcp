@@ -12,6 +12,7 @@ pub struct Config {
     pub cache_max_age: Duration,
     pub cache_max_entries: usize,
     pub timeout: Duration,
+    pub body_timeout: Duration,
     pub allowed_hosts: Vec<String>,
     pub allowed_origins: Vec<String>,
 }
@@ -93,6 +94,7 @@ impl Config {
             cache_max_age: Duration::from_secs(number("CACHE_MAX_AGE_SECONDS", 60, 3600)?),
             cache_max_entries: number("CACHE_MAX_ENTRIES", 1024, 10000)? as usize,
             timeout: Duration::from_secs(number("BAO_TIMEOUT_SECONDS", 30, 300)?),
+            body_timeout: Duration::from_secs(number("MCP_BODY_TIMEOUT_SECONDS", 30, 300)?),
             allowed_hosts: hosts,
             allowed_origins: origins,
         })

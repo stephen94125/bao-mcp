@@ -16,6 +16,7 @@
 | `BAO_CACERT` | 系统信任 | 可选的 Bao PEM CA bundle |
 | `BAO_SKIP_VERIFY` | `false` | 设为 `true` 或 `1`，跳过 Bao HTTPS 证书及主机名验证；`false` 或 `0` 启用验证 |
 | `MCP_LISTEN` | `127.0.0.1:8000` | MCP 监听地址 |
+| `MCP_BODY_TIMEOUT_SECONDS` | `30` | 接收完整 MCP POST 请求体的期限，最多 300 秒 |
 | `MCP_ALLOWED_HOSTS` | 回环主机 | 额外允许的 HTTP Host 模式，逗号分隔 |
 | `MCP_ALLOWED_ORIGINS` | 回环 HTTP origin | 额外允许的浏览器 Origin，逗号分隔 |
 | `CACHE_PATH` | `cache.db` | 工具发现的 SQLite 缓存，父目录需要存在 |
@@ -50,6 +51,8 @@ export MCP_ALLOWED_ORIGINS=https://agent-ui.example.com
 
 私有 Bao CA 通过 `BAO_CACERT` 配置，默认验证 TLS 证书与主机名。HTTP 请求体上限为 8 MiB，
 Bao 响应上限为 8 MiB。上游请求不跟随重定向，也不自动重试。
+未完成的 POST 请求体在 `MCP_BODY_TIMEOUT_SECONDS` 后返回 HTTP 408 并释放请求名额。
+此期限仅用于接收请求体，不会取消已经发出的 Bao 写入；请求体过大时返回 HTTP 413。
 
 `BAO_SKIP_VERIFY=true` 可连接未受信任或主机名不匹配的测试服务器。它会关闭
 证书与主机名验证，只应在明确接受此风险的环境中启用。默认值为 `false`，
