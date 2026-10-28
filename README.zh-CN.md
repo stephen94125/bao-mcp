@@ -1,6 +1,6 @@
 # Bao MCP
 
-[English](README.md) · [繁體中文設計說明](docs/design.zh-TW.md)
+[English](README.md) · [设计说明](docs/design.zh-CN.md)
 
 独立的 Rust MCP 服务，将每次请求的原生 OpenBao Token 传递给指定 namespace。
 不使用服务管理员 Token，不建立本地身份、Policy、业务数据库、Web UI、Mission
@@ -156,4 +156,4 @@ cargo test --locked --all-targets
 [在线测试说明](tests/README.md) 描述如何使用现有 Bao，并保留隔离测试 namespace。
 修复后只重跑失败范围，不重复执行整套稽核。[上游版本记录](UPSTREAM.md)。
 
-验证证据：[2026-10-28 报告](docs/validation-2026-10-28.zh-TW.md)。
+验证证据：[2026-10-28 报告](docs/validation-2026-10-28.zh-CN.md)。

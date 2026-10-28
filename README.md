@@ -1,6 +1,6 @@
 # Bao MCP
 
-[简体中文](README.zh-CN.md) · [繁體中文設計說明](docs/design.zh-TW.md)
+[简体中文](README.zh-CN.md) · [Design guide](docs/design.md)
 
 A standalone Rust MCP server over OpenBao. Each request uses the caller's native
 OpenBao token and the configured namespace. There is no service/admin token,
@@ -177,4 +177,4 @@ See [live test instructions](tests/README.md) for the opt-in existing-Bao test.
 It retains its isolated test namespace. Rerun only failed test scopes after a
 fix, rather than repeating the complete audit. See [upstream pin](UPSTREAM.md).
 
-Validation evidence: [2026-10-28 report](docs/validation-2026-10-28.zh-TW.md).
+Validation evidence: [2026-10-28 report](docs/validation-2026-10-28.md).
