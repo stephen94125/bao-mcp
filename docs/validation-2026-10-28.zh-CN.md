@@ -2,7 +2,7 @@
 
 [English](validation-2026-10-28.md)
 
-本篇记录最初在旧专案旁的 `bao-mcp/` 建立重写版本时的验证；当时没有替换既有程式、设定或 Bao 资源。
+本篇记录 Bao MCP 于 2026-10-28 完成的功能验证。
 参考原始码固定于 OpenBao v2.7.2；实机使用专案既有的 OpenBao v2.7.1 测试服务。
 没有升级远端 Bao，也没有把 v2.7.1 实测描述成 v2.7.2 执行期验证。
 
@@ -10,7 +10,7 @@
 
 - 34 个依功能分组的 MCP 工具，以及原生 JSON API 通用入口。
 - 原生 Token 逐请求透传，固定 namespace，预设 `agent`。
-- 无服务管理员 Token、本地身分／Policy、Web、业务 metadata 或 audit 资料库。
+- Secret、角色、证书、Policy、Token 与原生操作审计均由 Bao 管理。
 - 未加密 `cache.db`：只存 scope、Token hash、经筛选的能力／mount 资讯与时间。
 - 固定 freshness、闲置清除、容量上限、单 Token 与进程级查询限流。
 - 仅目前 Token 的快取刷新；实际操作始终由 Bao 即时授权。
@@ -58,7 +58,7 @@ body，以及实机发现的 namespace 内建 engine 类型与不存在 mount �
 
 首次测试时，原 `.env` 指定 `agent`，但远端没有该 namespace；Token 实际为 root。
 确认后，测试从 root 建立独立 namespace，没有修改 `.env` 或建立正式的 `agent`。
-新程式仍不负责启动时建立 namespace；正式使用预设值前须由操作员建立 `agent`。
+正式使用预设 namespace 前，须先准备好 `agent`；参见当前的[设置流程](../README.zh-CN.md#2-设置-agent-namespace-和管理员-token)。
 
 测试 namespace：
 
@@ -80,7 +80,7 @@ Policy、测试 Token、KV 版本、SSH／PKI CA 与签发结果、Transit 金�
 版本删除后恢复，以及撤销专用测试 Token，是被验证的操作；没有执行远端 teardown。
 本机测试程式已结束其自行启动的 MCP process。
 
-脱敏结果位于 `../test-output/mcp-live-20261028t143046z-6d14a9af/results.json`。
+脱敏结果位于 `test-output/mcp-live-20261028t143046z-6d14a9af/results.json`。
 同目录的 `state.json`、`private-artifacts.json` 与金钥档含私人测试材料，已排除 Git，
 不得将其内容贴入文件或日志。测试脚本支援以既有状态搭配 `--only` 只跑失败项目。
 
@@ -92,4 +92,3 @@ Policy、测试 Token、KV 版本、SSH／PKI CA 与签发结果、Transit 金�
 - ACME 配置 API 可操作；未实作或验证 ACME 客户端 JWS 流程。
 - Tool discovery 不是完整的权限列举。Bao 内部 resultant ACL 会遗漏 `+` 规则，
   结果明示 `complete:false`；通用工具仍交由 Bao 授权。
-- 没有旧版 Mission／Hub／SSH operator workflow、持久化补偿或交付确认保证。

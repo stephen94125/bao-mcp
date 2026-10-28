@@ -9,16 +9,9 @@
   - `README.zh-CN.md`: Simplified Chinese.
 - Keep both README versions consistent when updating their content, and include a link to the other language version in each file.
 
-## Agent skills
+## Repository guides
 
-### Issue tracker
-
-Track issues and specs in GitHub Issues for `stephen94125/mcp-vault`. Before issue operations, read `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-Use the five default triage labels. Before classifying or labelling issues, read `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Use a single-context layout with root `CONTEXT.md` and `docs/adr/`. Before exploring the codebase, read `docs/agents/domain.md`.
+- Follow the user's configured issue-tracker and Git-hosting conventions. Inspect
+  the repository remote before choosing a hosting CLI or naming a hosted project.
+- Keep setup instructions in the root READMEs and detailed usage in `docs/`.
+- Keep OpenBao administration helpers documented in `scripts/bao/README.md`.

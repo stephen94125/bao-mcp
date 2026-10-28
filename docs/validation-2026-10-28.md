@@ -2,7 +2,7 @@
 
 [简体中文](validation-2026-10-28.zh-CN.md)
 
-This records the original rewrite, initially created in `bao-mcp/` alongside the legacy application, without replacing its code or Bao resources.
+This records Bao MCP functional validation completed on 2026-10-28.
 Reference source was pinned to OpenBao v2.7.2; live tests used the existing OpenBao v2.7.1 service.
 The remote service was not upgraded. Testing v2.7.1 does not establish v2.7.2 runtime validation.
 
@@ -10,7 +10,7 @@ The remote service was not upgraded. Testing v2.7.1 does not establish v2.7.2 ru
 
 - 34 grouped tools and a generic native JSON API route.
 - Request-scoped native token forwarding and a fixed namespace, defaulting to `agent`.
-- No shared service token, local identity/policy system, Web UI, resource metadata database, or audit database.
+- Bao owns secrets, roles, certificates, policies, tokens, and native operation audit.
 - Unencrypted `cache.db` containing only scope, token hashes, allowlisted discovery metadata, and timestamps.
 - Fixed freshness, idle eviction, capacity limits, and per-token/process discovery throttling.
 - Caller-only refresh; actual execution always uses Bao's live authorization.
@@ -58,7 +58,7 @@ A denied or malformed catalog stops allocation.
 
 At the initial run, `.env` selected `agent`, but that namespace was absent and the supplied token belonged to root.
 The harness created an isolated namespace from root without changing `.env` or creating a production `agent` namespace.
-Gateway startup still does not create namespaces; an operator must create `agent` before using that default.
+Prepare `agent` before using that default; see the current [setup flow](../README.md#2-set-up-the-agent-namespace-and-its-administrator-token).
 
 Retained test namespace:
 
@@ -80,7 +80,7 @@ Policies, test tokens, KV versions, SSH/PKI material and issuance results, and T
 Version deletion/restoration and revocation of a dedicated test token were tested operations; there was no remote teardown.
 The harness terminated only its own local MCP process.
 
-Sanitized results: `../test-output/mcp-live-20261028t143046z-6d14a9af/results.json`.
+Sanitized results: `test-output/mcp-live-20261028t143046z-6d14a9af/results.json`.
 The same directory's `state.json`, `private-artifacts.json`, and key files contain private test material and are excluded from Git.
 Do not paste their contents into docs or logs. The harness supports retained state with `--only` for focused reruns.
 
@@ -92,4 +92,3 @@ Do not paste their contents into docs or logs. The harness supports retained sta
 - ACME configuration APIs are reachable, but the ACME client JWS flow was neither implemented nor tested.
 - Discovery is incomplete: the internal resultant ACL metadata omits `+` rules.
   Responses declare `complete:false`; generic requests remain subject to Bao authorization.
-- Legacy Mission/Hub/operator workflows, durable compensation, and delivery confirmation are absent.

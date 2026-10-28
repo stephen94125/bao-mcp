@@ -1,85 +1,71 @@
-# Bao MCP：资料来源、权限与快取的边界
+# Bao MCP 架构
 
 [English](design.md)
 
-Bao MCP 是 Rust／RMCP／Axum 写成的原生 Bao 工具介面。上游参考版本为
-OpenBao v2.7.2；完整操作方式与环境变数见 [README](../README.zh-CN.md)。
+Bao MCP 把 OpenBao 的 HTTP API 转成供 AI Agent 调用的工具。Rust、RMCP 和 Axum
+负责 MCP 传输，OpenBao 负责保存资源与权限控制。使用方式见
+[入门指南](../README.zh-CN.md)、[配置说明](configuration.zh-CN.md)及
+[工具示例](tools.zh-CN.md)。
 
-## 资料只由 Bao 管理
-
-Secret 的内容、版本与时间、SSH／PKI 角色与凭证、Transit 金钥，以及 Policy、Token
-都在 Bao。程式不建立第二份 metadata，不依 `created_by` 判断拥有者，不产生
-`_vault_meta`，不储存业务操作 journal。
-
-因此人工用 Bao CLI／GUI 改资料，MCP 下次读取就使用 Bao 回传结果。没有本地同步
-排程，也没有本地成功纪录能替代实际状态。如果一次多步骤建立只完成部分 engine，
-回传逐项结果并保留已完成部分；下次再补缺少的项目。不替使用者回滚删除资源。
-
-## 每一个请求使用自己的 Token
+## 请求流程
 
 ```text
-Agent 的原生 Bao Token
+Agent 的 OpenBao Token
         ↓ Authorization: Bearer
-Bao MCP：解析工具、检查参数、转换原生 API 路径
-        ↓ X-Vault-Token + 固定 X-Vault-Namespace
-OpenBao：身分验证、原生 Policy／role 限制、执行与 audit
+Bao MCP：检查参数，将工具操作转换成 API 路径
+        ↓ X-Vault-Token + 配置的 X-Vault-Namespace
+OpenBao：认证、授权、执行与审计
 ```
 
-程序没有共用管理员 Token。namespace 预设 `agent`，必须事先存在；启动时不连线
-建立任何 Bao 资源。呼叫者不能透过工具参数改 Header 或切换配置的 namespace。
-若有管理子 namespace 的原生权限，仍能在这个 namespace 之下操作。
+每次调用都把调用者的 Token 传给配置的 namespace，默认是 `agent`。连接客户端前，
+先通过设置脚本准备好该 namespace。工具参数选择此范围内的资源，Bao Policy
+决定调用者对这些资源及子 namespace 的权限。
 
-新增 Vault 时沿用原命名：KV 为 Vault 名称、SSH 为 `ssh-ca-<名称>`、PKI 共用
-`_sys_pki_root`／`_sys_pki_int`。这一步只配置 engine，不擅自产生 CA 或覆写既有角色。
-需要的 CA、SSH 使用者／TTL／选项、PKI 角色限制都用原生工具设定在 Bao。
+## 资源状态由 Bao 管理
 
-没有旧版的本地 Token、Mission JWT、SSH operator profile、Hub 或 Web UI。
-JWT 工作负载可以使用 Bao 自己的 JWT auth 交换 Token；工作负载如何取得 Token
-不是这个 MCP 的第二套身分系统。
+Secret、版本、时间戳、SSH 和 PKI 角色、证书、Transit 密钥、Policy 及 Token
+都通过 Bao 读写。通过 Bao CLI、UI 或其他 API 客户端作出的修改，会反映在之后的
+MCP 读取结果中。
 
-## 能力快取不参与实际授权
+`vault_create` 组合相关 mount：KV 使用 Vault 名称，SSH 使用 `ssh-ca-<名称>`，
+PKI 使用 namespace 共用的 `_sys_pki_root` 和 `_sys_pki_int`。产生 CA、设置角色
+限制与连接外部后端，都是明确的后续配置步骤。配置流程保留已有 mount，并逐项
+回报结果。部分完成时，先检查结果，再重复调用以补齐缺少的 mount。
 
-`cache.db` 是未加密、可删除的 SQLite，主键是上游／namespace scope 与 Token hash。
-保存能力查询结果、工具名称、mount 类型、建立／到期／最后使用时间；不保存 Token、
-Secret 或私钥。档案权限仍为 0600。
+## 工具发现与缓存
 
-首次查询会验证 Token 并取得候选权限；之后在固定 freshness 内命中快取。
-`CACHE_IDLE_TTL_SECONDS` 限制闲置多久清除，`CACHE_MAX_AGE_SECONDS` 限制即使一直
-使用也必须重新查询的时间。清除在启动或存取时执行。`cache_refresh` 只更新目前
-Token 的资料，而且先重新验证 Token；未知或错误的 Token 不能建立快取。
+发现工具时，Bao MCP 先验证 Token，再根据 Bao 的 resultant ACL 和 mount 信息
+建立候选 API 路径，查询原生 capabilities，选择相关工具。缓存按上游、namespace
+及 Token hash 区分结果。详见[缓存配置](configuration.zh-CN.md#缓存行为)。
 
-快取可能短暂反映旧 Policy，这只影响工具清单。实际读写没有使用快取放行，也不会
-因清单缺少工具就阻挡有效的原生操作。每次都交由 Bao 即时裁决。
+`cache.db` 保存 capabilities、工具名称、mount 类型及时间信息，是权限为 `0600`、
+可重建的 SQLite。固定有效期和闲置期限限制复用时间；容量、并发和速率限制控制
+查询成本。调用者使用 `cache_refresh` 时，会重新验证其 Token 并更新自己的记录。
 
-为防止大量随机 Token 或反复刷新耗尽资源，冷查询与刷新有单 Token 间隔、进程级
-速率、并发、记录数与资料大小上限。首次发现后五秒内刷新可能被限流。
+工具发现帮助 Agent 选择工具。每次实际操作仍由 OpenBao 使用传入的 Token 授权，
+包括发现缓存尚未更新的情况。
 
-## 工具清单不能保证精确列举所有权限
+## 工具发现的限制
 
-Bao capabilities API 只能回答「这些具体路径能做什么」，不能列举所有有权限路径。
-程式使用 Bao resultant ACL 与 mount 资讯建立候选，再确认具体路径能力。
-OpenBao v2.7.2 的该内部 ACL 介面没有回传 `+` 路径规则，因此不能宣称完整发现。
+Capabilities API 回答的是指定路径的权限。OpenBao v2.7.2 的内部 resultant ACL
+信息会遗漏 `+` 通配符规则，因此发现结果标明 `complete:false`。已验证的调用者
+可以用 `bao_request` 和 `api_help` 操作分组之外的原生 JSON API，同样受 Bao ACL
+限制。不同值需要不同权限时，应将它们放在不同的 KV Secret 路径。
 
-刷新结果会明示 `complete:false` 与限制。已验证 Token 可使用 `bao_request`／
-`api_help` 操作没有被发现的原生 JSON API。这些工具仍然没有超越 Bao 的权限。
-一般 KV 栏位也不会被 MCP 自动过滤；不同权限资料宜分不同原生 Secret 路径。
+## 失败处理与日志
 
-## 故障与日志
+无法确定写入结果时，返回 `outcome_unknown`。该操作可能已经完成，应先查询 Bao
+再决定是否重试。多步骤的 mount 配置会分别回报完成与失败项目，供调用者接续处理。
 
-禁止自动重试可能已执行的写操作。网路或后端错误使结果无法确认时，回传
-`outcome_unknown`，由呼叫者查 Bao 决定下一步。这个版本没有旧版的持久化补偿、
-任务防重播或交付状态保证；原生 wrapping token 的一次性语义仍由 Bao 负责。
+文字日志记录 Token hash、工具名称、资源路径 hash、结果及耗时。Token、秘密值、
+完整参数与上游错误正文不写入日志。Bao audit 提供原生请求路径、认证身份与操作
+历史；MCP 日志补充工具调用的上下文。
 
-文字日志记录 Token hash、工具、资源路径 hash、结果与耗时。秘密值、原始 Token、
-完整参数和上游错误正文不写入 log。详细的实际路径、身分和原生操作历史，使用
-已启用的 Bao audit；应用文字日志只补充 Agent 呼叫工具的过程。
+## API 覆盖范围
 
-## 功能覆盖的定义
+34 个工具按 engine 与用途组合 JSON API，保留原生请求 body。Transit 包含加密、
+解密、签名与验证。`bao_request` 可访问其他原生 JSON API 及已安装的插件。
+数据库、云端、目录服务、消息代理和 Kubernetes engine 仍需配置各自的后端与凭证。
 
-34 个工具按 engine 与用途分组，原生 JSON body 保持原样。Transit 包含加解密与
-签名验证。其余 engine 或外挂可透过 `bao_request`，不需要照每一个 REST endpoint
-建立一个 MCP tool。这表示 API 可通达，不代表外部资料库、云端、LDAP、RabbitMQ
-或 Kubernetes 已完成连线设定与端到端验证。
-
-LDAP 在 Bao 2.7 需要相容外部外挂。ACME 配置可操作，但 ACME 的 JWS 协定流程仍
-交由 ACME 客户端处理。原始二进位上传与任意自订 Header 不在这个 JSON 工具介面内。
+Bao 2.7 的 LDAP 需要兼容外部插件。PKI 配置完成后，ACME JWS 协议交由 ACME
+客户端处理。此接口用于结构化 JSON 请求；二进制传输应使用对应的原生客户端。

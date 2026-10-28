@@ -1,85 +1,81 @@
-# Bao MCP: Data Ownership, Authorization, and Cache Boundaries
+# Bao MCP Architecture
 
 [简体中文](design.zh-CN.md)
 
-Bao MCP is a native Bao tool interface built with Rust, RMCP, and Axum. Its reference source is
-OpenBao v2.7.2. See the [README](../README.md) for setup and environment variables.
+Bao MCP exposes OpenBao's HTTP APIs as tools for AI agents. Rust, RMCP, and Axum
+provide the MCP transport; OpenBao stores resources and enforces access. Start with
+the [setup guide](../README.md), [configuration](configuration.md), and
+[tool examples](tools.md).
 
-## Bao owns resource state
-
-Secret contents, versions, timestamps, SSH/PKI roles and certificates, Transit keys, policies, and tokens
-belong to Bao. The gateway has no duplicate resource metadata, `created_by` ownership rule,
-`_vault_meta` record, or persistent business-operation journal.
-
-After a direct Bao CLI/GUI change, the next MCP read uses Bao's response. There is no synchronization
-job or local success record overriding current resource state. When a multi-step allocation partially succeeds,
-the response reports each result and retains completed mounts; a later call can allocate missing mounts without rollback deletion.
-
-## Each request uses its own token
+## Request flow
 
 ```text
-Agent's native Bao token
+Agent's OpenBao token
         ↓ Authorization: Bearer
-Bao MCP: validate arguments and map tools to native API paths
-        ↓ X-Vault-Token + fixed X-Vault-Namespace
-OpenBao: authenticate, enforce native policies/roles, execute, and audit
+Bao MCP: validate arguments and map tools to API paths
+        ↓ X-Vault-Token + configured X-Vault-Namespace
+OpenBao: authenticate, authorize, execute, and audit
 ```
 
-The process has no shared administrator token. The configured namespace defaults to `agent` and must already exist.
-Startup creates no Bao resources. Tool arguments cannot override headers or change that configured namespace.
-Native permissions may still allow administration of child namespaces beneath it.
+Every call forwards the caller's token to the configured namespace, which defaults
+to `agent`. Prepare that namespace with the setup script before connecting clients.
+Tool arguments select resources within this scope. Bao policies determine access
+to those resources and any child namespaces.
 
-Vault allocation uses the existing naming scheme: KV at the vault name, SSH at `ssh-ca-<name>`, and shared PKI at
-`_sys_pki_root` and `_sys_pki_int`. Allocation enables mounts without generating CAs or overwriting existing roles.
-Configure CA material, SSH principals/TTL/options, and PKI role restrictions explicitly through native tools.
+## Resource state belongs to Bao
 
-The gateway does not include legacy local tokens, Mission JWT, operator profiles, Hub, or a Web UI.
-JWT workloads can exchange identity through Bao's native JWT auth method. Acquiring a token remains
-the caller's responsibility rather than a second gateway identity system.
+Secrets, versions, timestamps, SSH and PKI roles, certificates, Transit keys,
+policies, and tokens are read from and written to Bao. Changes through the Bao CLI,
+UI, or another API client are reflected in subsequent MCP reads.
 
-## Capability cache is not an authorization source
+`vault_create` groups related mounts: KV at the vault name, SSH at
+`ssh-ca-<name>`, and namespace-wide PKI at `_sys_pki_root` and `_sys_pki_int`.
+CA generation, role restrictions, and external backend connections are explicit
+configuration steps. Allocation preserves existing mounts and reports each step.
+After a partial result, inspect it and repeat the call to add missing mounts.
 
-`cache.db` is disposable, unencrypted SQLite keyed by upstream/namespace scope and token hash.
-It stores capabilities, tool names, mount types, and fetch/expiry/last-use times, not raw tokens,
-secret values, or private keys. File permissions are 0600.
+## Tool discovery and caching
 
-Cold discovery validates the token and queries candidate permissions. A fixed freshness interval bounds cache reuse.
-`CACHE_IDLE_TTL_SECONDS` controls idle eviction; `CACHE_MAX_AGE_SECONDS` limits freshness even for entries
-used continuously. Pruning occurs at startup and cache access. `cache_refresh` revalidates the caller before replacing
-only that token's entry; unknown or invalid tokens cannot populate the cache.
+At discovery, Bao MCP validates the token and derives candidate API paths from
+Bao's resultant ACL and mount metadata. It checks native capabilities on those
+paths to select relevant tools. The cache stores these results by upstream,
+namespace, and token hash. See [cache settings](configuration.md#cache-behavior).
 
-Cached policy metadata may briefly be stale, affecting tool discovery only. It neither grants execution nor blocks
-a native operation merely because its tool is absent from the list. Bao decides authorization on every execution.
+`cache.db` contains capabilities, tool names, mount types, and timing metadata.
+It is disposable SQLite with mode `0600`. Fixed freshness and idle limits bound
+reuse; capacity, concurrency, and rate limits bound discovery work. A caller's
+`cache_refresh` validates that token and replaces its own entry.
 
-Cold queries and refreshes have per-token intervals, process-wide rate/concurrency limits, row limits, and size limits.
-Refreshing within five seconds of initial discovery may be throttled.
+Discovery guides tool selection. OpenBao authorizes every actual operation using
+the forwarded token, including calls made while cached discovery data is stale.
 
-## Discovery cannot enumerate every possible permission
+## Discovery limits
 
-The capabilities API answers questions about supplied concrete paths; it cannot enumerate all authorized paths.
-The gateway derives candidates from resultant ACL and mount metadata, then checks their capabilities.
-OpenBao v2.7.2's internal ACL metadata omits `+` wildcard rules, so discovery cannot claim completeness.
+Capabilities answer questions about supplied paths. OpenBao v2.7.2's internal
+resultant ACL metadata omits `+` wildcard rules, so discovery reports
+`complete:false`. Authenticated callers can use `bao_request` and `api_help` for
+native JSON routes outside the discovered groups, subject to the same Bao ACLs.
+Use separate KV secret paths when their values need different access policies.
 
-Refresh results expose `complete:false` and warnings. Authenticated callers can use `bao_request` and
-`api_help` for undiscovered native JSON paths, still subject to Bao's permissions.
-The gateway does not filter individual KV fields; use separate secret paths for different access scopes.
+## Failures and observability
 
-## Failures and logs
+A write with an uncertain outcome returns `outcome_unknown`. Inspect Bao before
+retrying because the operation may already have completed. Multi-step allocation
+reports completed and failed steps so the caller can resume deliberately.
 
-Writes that may already have executed are not automatically retried. Ambiguous network or backend failures return
-`outcome_unknown`, leaving callers to inspect Bao before retrying. This version has no legacy persistent compensation,
-mission replay-prevention, or delivery-confirmation guarantees. Native wrapping tokens retain Bao's one-time behavior.
+Text logs record token hashes, tool names, resource-path hashes, outcomes, and
+durations. Tokens, secret values, full arguments, and arbitrary upstream error
+bodies are excluded. Bao audit supplies native request paths, authenticated
+identities, and operation history; MCP logs add tool-call context.
 
-Text logs record token hashes, tool names, resource-path hashes, outcomes, and durations. Raw tokens, secret values,
-full arguments, and arbitrary upstream error bodies are excluded. Enable Bao audit for native paths, identities,
-and operation history; gateway logs add the agent's tool-call activity.
+## API coverage
 
-## What API coverage means
+The 34 tools group JSON APIs by engine and purpose and preserve native request
+bodies. Transit includes encryption, decryption, signing, and verification.
+`bao_request` extends access to other native JSON APIs and installed plugins.
+Database, cloud, directory, broker, and Kubernetes engines require their own
+backend configuration and credentials.
 
-The 34 tools group native JSON APIs by engine and purpose while preserving request bodies. Transit covers encryption,
-decryption, signing, and verification. `bao_request` reaches other native JSON routes and compatible installed plugins
-without one tool per endpoint. API reachability does not establish external database, cloud, LDAP, RabbitMQ,
-or Kubernetes configuration or end-to-end validation.
-
-LDAP requires a compatible external plugin in Bao 2.7. ACME configuration is available; its JWS protocol remains
-the ACME client's responsibility. Raw binary uploads and arbitrary custom headers are outside this JSON interface.
+LDAP needs a compatible external plugin in Bao 2.7. An ACME client handles the
+ACME JWS protocol after PKI configuration. This JSON interface supports structured
+API requests; use the appropriate native client for binary transfers.

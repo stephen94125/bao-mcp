@@ -7,7 +7,7 @@ async fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "bao-mcp [serve]\n\nRequired: BAO_ADDR\nDefaults: BAO_NAMESPACE=agent MCP_LISTEN=127.0.0.1:8000 CACHE_PATH=cache.db\nSend Authorization: Bearer <OpenBao token> to /mcp. No service token or startup initialization."
+            "bao-mcp [serve]\n\nRequired: BAO_ADDR\nDefaults: BAO_NAMESPACE=agent MCP_LISTEN=127.0.0.1:8000 CACHE_PATH=cache.db\nExpose OpenBao as MCP tools. Send Authorization: Bearer <OpenBao token> to /mcp.\nPrepare the namespace with scripts/setup-bao-environment.sh."
         );
         return;
     }

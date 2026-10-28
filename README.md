@@ -1,180 +1,197 @@
 # Bao MCP
 
-[简体中文](README.zh-CN.md) · [Design guide](docs/design.md)
+[简体中文](README.zh-CN.md)
 
-A standalone Rust MCP server over OpenBao. Each request uses the caller's native
-OpenBao token and the configured namespace. There is no service/admin token,
-local identity or policy database, Web UI, Mission broker, Hub, or background
-engine initialization. OpenBao owns secrets, roles, certificates, ACLs and audit.
+Bao MCP turns OpenBao into MCP tools for AI agents. Agents can read and write
+secrets, request SSH and TLS certificates, and use Transit encryption and signing.
+Each tool call uses the agent's OpenBao token; OpenBao applies its policies in the
+selected namespace.
 
-## Run
-
-Requires Rust 1.92+ and an existing OpenBao namespace (default: `agent`).
-
-```sh
-cd bao-mcp
-cargo build --release --locked
-BAO_ADDR=https://bao.example.com:8200 ./target/release/bao-mcp serve
+```text
+Agent → MCP → Bao MCP → OpenBao / agent namespace
 ```
 
-Connect a Streamable HTTP MCP client to `http://127.0.0.1:8000/mcp` with
-`Authorization: Bearer <native OpenBao token>`. The binary accepts only `serve`
-(or no command), `--help`, and `-h`. `/healthz` is local liveness, not a Bao
-readiness or authorization check. The application does not read `.env` files.
+## Before you start
 
-Only `BAO_ADDR` is required. Native tokens are issued outside this server using
-Bao CLI/API or a Bao auth method. A JWT must first be exchanged through the
-configured Bao auth method; the legacy application's tokens are not accepted.
-Tokens need `read` on `auth/token/lookup-self` for discovery authentication.
-Bao's standard `default` policy normally grants that and discovery endpoints.
-Tokens with finite use counts spend uses on metadata requests too; use normal
-TTL-limited service tokens for MCP rather than single-use wrapping tokens.
-To unwrap, use a normal caller token and pass the wrapping token in the native
-`sys/wrapping/unwrap` JSON body. Neither token is cached or logged.
+- OpenBao 2.7.x installed. For installation, see the [OpenBao documentation](https://openbao.org/docs/install/).
+- Bash and Python 3 for the setup script.
+- Rust 1.92+ and a C compiler to build Bao MCP.
+- An MCP client supporting Streamable HTTP and a bearer-token header.
 
-## Configuration
+The steps below start a local Bao server, prepare the `agent` namespace, build
+Bao MCP, and store a first secret. If Bao is already running, use its address and
+skip starting another server.
 
-| Environment variable | Default | Purpose |
-| --- | --- | --- |
-| `BAO_ADDR` | required | Fixed HTTP(S) OpenBao origin; URL credentials are rejected |
-| `BAO_NAMESPACE` | `agent` | Existing, nonempty namespace; nested namespaces are supported |
-| `BAO_CACERT` | system trust | Optional PEM CA bundle; TLS verification stays enabled |
-| `MCP_LISTEN` | `127.0.0.1:8000` | Listen address |
-| `MCP_ALLOWED_HOSTS` | loopback hosts | Additional comma-separated exact host/port patterns accepted by RMCP |
-| `MCP_ALLOWED_ORIGINS` | loopback HTTP origins | Additional comma-separated allowed browser origins |
-| `CACHE_PATH` | `cache.db` | Disposable, unencrypted SQLite discovery cache; parent directory must exist |
-| `CACHE_IDLE_TTL_SECONDS` | `3600` | Remove entries unused for this interval |
-| `CACHE_MAX_AGE_SECONDS` | `60` | Non-sliding discovery freshness, at most 3600 seconds |
-| `CACHE_MAX_ENTRIES` | `1024` | LRU row limit, at most 10000 |
-| `BAO_TIMEOUT_SECONDS` | `30` | Upstream timeout, at most 300 seconds |
-| `LOG_LEVEL` | `info` | `info`, `warn`, or `error`; HTTP wire tracing is not enabled |
+Clone or download this repository and open a terminal at its root. With your
+repository URL, for example:
 
-Place remote deployments behind HTTPS. Host and Origin checks are transport
-checks, not a replacement for Bao authentication. The HTTP body limit is 2 MiB;
-upstream responses are limited to 8 MiB. Redirects and automatic retries are
-disabled. Ambiguous mutation failures are reported as `outcome_unknown`; inspect
-Bao before retrying an issuance, rotation or other non-idempotent action.
+```sh
+git clone <repository-url> bao-mcp
+cd bao-mcp
+```
 
-## Tools
+## 1. Start or connect to OpenBao
 
-34 tools group native API operations. Mounted tools take `mount`, `operation`,
-`path`, optional `data`, `query`, and `wrap_ttl`; specialized KV tools supply the
-KV v2 API prefixes. `data` is the complete native JSON body, not an invented
-local data model. Use `api_help` to obtain the endpoint's fields from Bao.
+For a local trial, start Bao in one terminal and leave it running:
 
-| Tools | Native capability |
+```sh
+bao server -dev -dev-no-store-token -dev-listen-address=127.0.0.1:8200
+```
+
+[Development mode](https://openbao.org/docs/concepts/dev-server/) initializes and
+unseals Bao automatically. It prints an initial root token for setup. This mode
+stores data in memory and loses it on restart; use it for local experimentation.
+For a persistent deployment, follow Bao's [server configuration](https://openbao.org/docs/configuration/).
+
+In a second terminal:
+
+```sh
+export BAO_ADDR=http://127.0.0.1:8200
+bao status
+```
+
+For an existing server, set `BAO_ADDR` to its HTTPS address instead. Set
+`BAO_CACERT=/path/to/ca.pem` if it uses a private CA. Continue when `Initialized`
+is `true` and `Sealed` is `false`. For a new persistent server, follow the
+[initialization and unseal guide](docs/bao/cli-basics.md#3-status-and-first-initialization)
+first; keep its unseal shares and initial root token secure.
+
+## 2. Set up the `agent` namespace and its administrator token
+
+From this repository's root:
+
+```sh
+./scripts/setup-bao-environment.sh --token-file ./agent-admin.token
+```
+
+The script uses `BAO_TOKEN` when set. Otherwise it asks for a root token with
+hidden terminal input. For the local server, enter the root token printed in
+step 1. For an existing server, use its authorized root token for this setup.
+If `BAO_TOKEN` currently holds another identity, run `unset BAO_TOKEN` to use the prompt.
+
+The script:
+
+1. Creates `agent` if needed and preserves an existing namespace.
+2. Installs the namespace's `admin` policy from [admin.hcl](scripts/bao/policies/admin.hcl), or reuses an identical policy.
+3. Issues an orphan service token carrying `admin` and `default`, with a requested lifetime of 24 hours.
+4. Writes the token to `agent-admin.token` with mode `0600` and reports its actual lifetime.
+
+An existing token file or a different existing `admin` policy stops setup so you
+can choose a new output file or inspect the policy. Other options:
+
+```sh
+./scripts/setup-bao-environment.sh \
+  --namespace agent --ttl 8h --token-file ./agent-admin-8h.token
+```
+
+**The policy is stored inside `agent`.** Its `path "*"` covers `agent/` and its
+descendants, effectively `/agent/*`. Writing `path "agent/*"` inside this policy
+would add another `agent/` segment. The issued token belongs to `agent`; merely
+changing a root token's namespace setting does not restrict that root token.
+
+The initial root token is a setup credential. Use the generated namespace token
+for the MCP client, and keep token files private. Its orphan status makes its
+lifetime independent of the token used for setup. Server TTL limits can shorten
+the request, and the explicit maximum limits its total lifetime.
+
+## 3. Build and start Bao MCP
+
+From a source checkout, run:
+
+```sh
+cargo build --release --locked
+BAO_NAMESPACE=agent ./target/release/bao-mcp serve
+```
+
+The service uses `BAO_ADDR` from step 1 and listens at
+`http://127.0.0.1:8000/mcp`. Leave it running while your agent connects.
+
+The server's address, namespace, listener, and cache can be configured through
+environment variables. See [configuration and build troubleshooting](docs/configuration.md),
+including the settings for remote HTTPS deployments.
+
+## 4. Connect your MCP client
+
+Add an HTTP MCP server with these settings:
+
+| Setting | Value |
 | --- | --- |
-| `vault_create` | Allocate a named bundle of engines, idempotently |
-| `kv_read`, `kv_write`, `kv_manage` | KV v1/v2, versions, CAS, merge patch, metadata, delete/undelete/destroy |
-| `ssh_ca`, `ssh_roles`, `ssh_issue` | SSH issuers, CA material, roles, signing, key/certificate issuance and OTP |
-| `pki_ca`, `pki_roles`, `pki_certificates`, `pki_config` | PKI CA/issuers, roles, issuance/signing, revocation, CRL and configuration |
-| `transit_keys`, `transit_crypto` | Key lifecycle/import/export/rotation, encryption/decryption, signing/verification, HMAC/hash/random |
-| `database_connections`, `database_roles`, `database_credentials` | Database engine configuration, roles, dynamic/static credentials and rotation |
-| `kubernetes`, `ldap`, `rabbitmq` | Corresponding native engine APIs; LDAP requires an installed compatible external plugin in Bao 2.7 |
-| `totp_keys`, `totp_code`, `cubbyhole` | TOTP and token-private storage |
-| `identity`, `auth`, `token`, `policy` | Native identity, auth method, token and policy management |
-| `leases`, `mounts`, `namespaces`, `audit`, `system` | Native system administration within the configured namespace and caller ACL |
-| `bao_request`, `api_help` | Native JSON API escape hatch and native endpoint/OpenAPI help |
-| `cache_refresh` | Refresh only the authenticated caller's discovery cache |
+| Transport | Streamable HTTP |
+| URL | `http://127.0.0.1:8000/mcp` |
+| Authorization header | `Bearer <contents of agent-admin.token>` |
 
-`bao_request` covers additional native JSON endpoints and installed plugins
-without adding a tool per REST operation. It does not expose arbitrary upstream
-URLs/headers, raw binary uploads, or the ACME client's JWS protocol. ACME engine
-configuration is available; an ACME client still performs the ACME protocol.
-Installing an engine/plugin or accessing an external database/cloud service is
-an operator responsibility, not implied by its MCP tool being present.
+Use your client's bearer-token or secret-setting mechanism to supply the token;
+the angle-bracket text above is a placeholder. Ask the client to list tools.
+Available tools are discovered from that token's Bao permissions.
 
-### Examples
+## 5. Create a vault and store a secret
+
+Ask your agent to call these MCP tools in order. Here, a **vault** is a named
+bundle of Bao engine mounts.
+
+Create a vault named `demo`:
 
 ```json
-{"name":"kv_write","arguments":{"mount":"team","path":"service","data":{"data":{"password":"example"},"options":{"cas":0}}}}
-{"name":"kv_read","arguments":{"mount":"team","path":"service"}}
-{"name":"ssh_issue","arguments":{"mount":"ssh-ca-team","operation":"write","path":"sign/deploy","data":{"public_key":"ssh-ed25519 ...","valid_principals":"deploy","ttl":"5m"}}}
-{"name":"transit_crypto","arguments":{"mount":"transit","operation":"write","path":"sign/build","data":{"input":"aGVsbG8="}}}
-{"name":"bao_request","arguments":{"operation":"write","path":"sys/wrapping/unwrap","data":{"token":"<wrapping token>"}}}
+{"name":"vault_create","arguments":{"vault_id":"demo"}}
+```
+
+This prepares KV v2 at `demo/`, SSH at `ssh-ca-demo/`, and the namespace's shared
+PKI mounts `_sys_pki_root/` and `_sys_pki_int/`. Existing compatible mounts retain
+their settings.
+
+After the first allocation, refresh discovery so the new engine tools appear,
+then ask your client to list tools again:
+
+```json
 {"name":"cache_refresh","arguments":{}}
 ```
 
-### Vault allocation
+If refresh returns `rate_limited`, wait five seconds and retry it. Before mounts
+exist, their engine-specific tools may be absent from the tool list.
 
-`vault_create` takes `vault_id`. By default it ensures four mounts:
+Write a sample value:
 
-- `<vault_id>`: KV v2.
-- `ssh-ca-<vault_id>`: SSH.
-- `_sys_pki_root` and `_sys_pki_int`: shared PKI mounts in the namespace, following the legacy naming scheme.
-
-It does **not** create the namespace, create `_vault_meta`, generate CA keys,
-change existing roles, or overwrite existing engine configuration. Configure
-and issue certificates explicitly with the native SSH/PKI tools. An existing
-mount with the wrong engine type/version is a conflict. A partially allocated
-bundle returns `complete:false`, per-mount results, and MCP `isError:true`;
-created mounts remain available and a later invocation resumes missing mounts.
-Do not infer PKI isolation per vault: the two PKI mounts are namespace-wide.
-
-## Discovery and cache semantics
-
-A cold request validates the token with `lookup-self`, reads visible mounts and
-resultant ACL metadata, and confirms bounded concrete candidate paths with
-`sys/capabilities-self`. Narrow exact-path read grants are distinguished from
-write grants. Cached requests do not repeat that discovery.
-
-**Tool discovery is not a complete authorization oracle.** OpenBao 2.7.2's
-internal resultant-ACL endpoint omits `+` segment wildcard rules, and capabilities
-queries cannot enumerate unknown paths. Missing metadata rights or bounded
-candidate limits can omit tools. `bao_request` and `api_help` remain usable for
-authenticated callers. Grouped tools may be visible for one permitted path or
-operation while another argument is denied. Every actual operation reaches Bao
-with the current caller token; the cached tool list never grants or blocks it.
-The internal UI metadata API is version-sensitive. Refresh returns
-`complete:false`, concrete capabilities, mounts and explanatory warnings.
-
-The cache key combines the upstream/namespace scope and full SHA-256 token hash.
-Only derived discovery metadata, timestamps and hashes are stored; no raw
-lookup response, token, secret value, request payload or private key is stored.
-The file is plaintext SQLite with mode 0600. It is safe to remove while the
-server is stopped; it is rebuilt on demand. A corrupt cache reports a clear
-error rather than silently discarding an operator's file.
-
-Freshness is bounded by both token TTL and `CACHE_MAX_AGE_SECONDS`; using an
-entry updates `last_used` without extending its fixed freshness. Expired/idle
-entries are pruned at startup and cache access. A row limit, 32 MiB database
-limit and 512 KiB snapshot limit bound storage. There is no resource-state DB.
-
-`cache_refresh` revalidates the caller before fetching and replacing that
-caller's entry. Unknown/invalid tokens cannot fill the cache. Cold/refresh
-attempts are limited to once per token per five seconds, 32 starts per second
-per process and eight concurrent fetches; HTTP concurrency is limited to 64.
-Invalidation after a native rejection permits fresh revalidation under the same
-process-wide budget, so one forbidden path does not lock out other allowed paths.
-An immediate refresh after first discovery may return 429. A random token does
-not bypass these process-wide bounds. Limits are local to each replica.
-
-After ACL changes, refresh or wait for fixed freshness. A revoked token can
-briefly retain a cached **tool list**, but protected execution is rejected by
-Bao immediately; 401/403 execution failures invalidate the cached entry.
-The cache cannot observe task cancellation or other legacy Mission semantics.
-
-## Logging and testing
-
-Text logs go to stderr. Business call logs contain a SHA-256 actor ID, tool
-name, hash of the resource identifier, outcome and duration. They never include
-Bearer tokens, raw paths, arguments, response values, private keys or arbitrary
-upstream error bodies. Bao audit must be configured separately for actual native
-request history and identity; these logs are not a replacement for Bao audit.
-
-Run the Rust contract suite once:
-
-```sh
-cargo test --locked --all-targets
+```json
+{"name":"kv_write","arguments":{"mount":"demo","path":"hello","data":{"data":{"message":"Hello from Bao MCP"}}}}
 ```
 
-On this macOS workstation, if the Nix linker cannot find `libiconv`, set
-`CC=/usr/bin/clang`, `CXX=/usr/bin/clang++`,
-`SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk`, and
-`CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/clang` for the build command.
+Read it:
 
-See [live test instructions](tests/README.md) for the opt-in existing-Bao test.
-It retains its isolated test namespace. Rerun only failed test scopes after a
-fix, rather than repeating the complete audit. See [upstream pin](UPSTREAM.md).
+```json
+{"name":"kv_read","arguments":{"mount":"demo","path":"hello"}}
+```
 
-Validation evidence: [2026-10-28 report](docs/validation-2026-10-28.md).
+KV is ready after allocation. For SSH or TLS issuance, use the MCP CA and role
+tools to configure the CA and issuance rules, then request a certificate.
+[Tool examples](docs/tools.md) show the sequence and cover Transit as well.
+
+## Give everyday agents narrower access
+
+The setup token administers all of `agent`, including policies and tokens.
+For an agent working with one vault, use the [policy templates](scripts/bao/policies/):
+
+| Template | Scope inside `agent` |
+| --- | --- |
+| `admin.hcl` | Namespace administration and descendants |
+| `vault-readwrite.hcl` | Full access to the `demo` KV and SSH mounts |
+| `vault-readonly.hcl` | Read/list/scan access to those mounts |
+
+Replace `demo` with your vault name before applying a template. Full read/write
+includes permanent KV version deletion and SSH CA management. The PKI mounts are
+shared; grant selected PKI issuance roles separately, as shown in the
+[scripts guide](scripts/bao/README.md).
+
+Use the interactive helpers in `scripts/bao/` to apply a policy, create a
+reusable administrator login, issue a token, or enable additional engines.
+[Their README](scripts/bao/README.md) explains the inputs and commands.
+When policies change, `cache_refresh` updates the client's discovered tool list;
+Bao evaluates actual operations immediately.
+
+## Further reading
+
+- [Tools and certificate examples](docs/tools.md)
+- [Configuration, cache, logs, and build troubleshooting](docs/configuration.md)
+- [Request and authorization design](docs/design.md)
+- [Bao CLI basics](docs/bao/cli-basics.md), [authentication](docs/bao/auth-methods.md), and [ACL policies](docs/bao/acl-policy.md)
+- [Tests](tests/README.md) and [recorded validation](docs/validation-2026-10-28.md)
+- [OpenBao reference version](UPSTREAM.md)
