@@ -2,3 +2,8 @@
 /cache.db*
 .env
 /test-output/
+
+# Local credentials and optional upstream reference source.
+.token
+*.token
+/openbao/
