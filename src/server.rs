@@ -10,7 +10,7 @@ use crate::{
 use axum::{
     Json, Router,
     body::{Body, to_bytes},
-    extract::{Request, State},
+    extract::{ConnectInfo, Request, State},
     middleware::{self, Next},
     response::{IntoResponse, Response},
 };
@@ -27,6 +27,7 @@ use sha2::{Digest, Sha256};
 use std::{
     borrow::Cow,
     error::Error as _,
+    net::SocketAddr,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -95,7 +96,11 @@ async fn authenticate(State(app): State<App>, mut request: Request, next: Next) 
         Err(_) => return failure(Error::unauthorized()),
     };
     // Authentication/discovery is short-lived cached; execution always uses Bao's live ACL.
-    if let Err(e) = app.discovery.get(&credential, false).await {
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|info| info.0.ip());
+    if let Err(e) = app.discovery.get_from_peer(&credential, false, peer).await {
         tracing::warn!(actor=%credential.hash(),code=%e.code,status=e.status,"request_denied");
         return failure(e);
     }

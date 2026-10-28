@@ -94,10 +94,22 @@ Stop the server before deleting a disposable or damaged cache; the next request
 rebuilds it.
 
 Call `cache_refresh` after policy changes to refresh only the current caller's
-entry. Discovery starts are limited to once per token per five seconds, 32 per
-second per process, and eight concurrent fetches. HTTP concurrency is limited to
-64. Native authorization failures invalidate the caller's entry and permit
-revalidation under the process-wide budget.
+entry. Tokens retain a five-second refresh cooldown. Authentication has separate
+lanes: first-seen tokens get 24 starts/second and six concurrent lookups; recently
+verified tokens get eight starts/second and two reserved lookups. First-seen
+tokens also share a four-starts/second limit per transport-peer IP. The executable
+uses the socket peer, never `Forwarded` or `X-Forwarded-For`; callers without peer
+information share one bucket. Behind a proxy, configure client-specific admission
+there because the gateway sees the proxy's IP.
+
+Only successful token validation can spend the metadata discovery budget of 32
+starts/second and eight concurrent fetches. The reserved lane remembers at most
+1024 verified hashes for up to five minutes, capped by the token's reported TTL;
+these markers never authorize execution and do not evict live markers to admit
+new ones. Invalid-token lookups remove their marker. HTTP concurrency is limited
+to 64. Native path denials invalidate that token's cached snapshot and allow
+immediate revalidation without clearing the shared budgets. Distributed floods or
+first-time callers sharing an overloaded source can still require ingress limits.
 
 A cached tool list can briefly reflect an earlier policy. Actual operations always
 reach Bao with the current token and use its current permissions.

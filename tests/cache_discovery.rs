@@ -13,17 +13,26 @@ use bao_mcp::{
 };
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeSet,
+    net::{IpAddr, Ipv4Addr},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
+use tokio::sync::Semaphore;
+
+struct AuthGate {
+    entered: Semaphore,
+    release: Semaphore,
+}
 
 #[derive(Clone, Default)]
 struct Stub {
     requests: Arc<Mutex<Vec<(String, String)>>>,
     revoked: Arc<AtomicBool>,
+    invalid_auth_gate: Arc<Mutex<Option<Arc<AuthGate>>>>,
 }
 
 async fn upstream(
@@ -40,7 +49,14 @@ async fn upstream(
         .lock()
         .unwrap()
         .push((token.to_owned(), path.clone()));
-    if token == "invalid-token" || stub.revoked.load(Ordering::SeqCst) {
+    if token.starts_with("invalid-") && path == "auth/token/lookup-self" {
+        let gate = stub.invalid_auth_gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            gate.entered.add_permits(1);
+            gate.release.acquire().await.unwrap().forget();
+        }
+    }
+    if token.starts_with("invalid-") || stub.revoked.load(Ordering::SeqCst) {
         return (
             StatusCode::FORBIDDEN,
             axum::Json(json!({"errors":["permission denied"]})),
@@ -215,6 +231,149 @@ async fn invalid_tokens_are_not_persisted_and_are_throttled() {
             .unwrap(),
         0
     );
+    server.abort();
+}
+
+#[tokio::test]
+async fn rotating_invalid_tokens_share_peer_budget_and_leave_capacity_for_a_new_peer() {
+    let (dir, discovery, _cache, stub, server) = setup().await;
+    let attacker = Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
+    tokio::time::timeout(Duration::from_millis(900), async {
+        for index in 0..16 {
+            let credential = Credential::new(&format!("invalid-rotating-{index}")).unwrap();
+            let error = discovery
+                .get_from_peer(&credential, false, attacker)
+                .await
+                .unwrap_err();
+            assert_eq!(error.status, if index < 4 { 403 } else { 429 });
+        }
+    })
+    .await
+    .expect("the storm must fit within one admission window");
+    {
+        let requests = stub.requests.lock().unwrap();
+        assert_eq!(requests.len(), 4);
+        assert!(requests.iter().all(|(token, path)| {
+            token.starts_with("invalid-") && path == "auth/token/lookup-self"
+        }));
+    }
+    let db = rusqlite::Connection::open(dir.path().join("cache.db")).unwrap();
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM discovery", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+
+    let snapshot = discovery
+        .get_from_peer(
+            &Credential::new("first-valid-token").unwrap(),
+            false,
+            Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2))),
+        )
+        .await
+        .unwrap();
+    assert!(snapshot.tools.iter().any(|tool| tool == "kv_read"));
+    assert_eq!(
+        stub.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(token, path)| {
+                token == "first-valid-token" && path == "auth/token/lookup-self"
+            })
+            .count(),
+        1
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn known_revalidation_has_reserved_auth_capacity_and_isolated_shard_locks() {
+    let (_dir, discovery, _cache, stub, server) = setup().await;
+    let known = Credential::new("known-read-token").unwrap();
+    let known_peer = Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)));
+    discovery
+        .get_from_peer(&known, false, known_peer)
+        .await
+        .unwrap();
+    discovery.invalidate(&known).await.unwrap();
+
+    let gate = Arc::new(AuthGate {
+        entered: Semaphore::new(0),
+        release: Semaphore::new(0),
+    });
+    *stub.invalid_auth_gate.lock().unwrap() = Some(gate.clone());
+    // Match the first hash byte modulo 64 used by discovery's shard_index.
+    let shard =
+        |credential: &Credential| usize::from_str_radix(&credential.hash()[..2], 16).unwrap() % 64;
+    let known_shard = shard(&known);
+    let colliding = (0..10_000)
+        .map(|index| Credential::new(&format!("invalid-held-{index}")).unwrap())
+        .find(|credential| shard(credential) == known_shard)
+        .expect("find an unknown token colliding with the known token's shard");
+    let mut unknown = vec![colliding];
+    let mut shards = BTreeSet::from([known_shard]);
+    for index in 10_000..20_000 {
+        let credential = Credential::new(&format!("invalid-held-{index}")).unwrap();
+        if shards.insert(shard(&credential)) {
+            unknown.push(credential);
+        }
+        if unknown.len() == 6 {
+            break;
+        }
+    }
+    assert_eq!(unknown.len(), 6);
+    assert_eq!(shard(&unknown[0]), known_shard);
+    assert_eq!(
+        shards.len(),
+        6,
+        "unknown calls must not serialize each other"
+    );
+    let mut blocked = Vec::new();
+    for (index, credential) in unknown.into_iter().enumerate() {
+        let discovery = discovery.clone();
+        blocked.push(tokio::spawn(async move {
+            discovery
+                .get_from_peer(
+                    &credential,
+                    false,
+                    Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20 + index as u8))),
+                )
+                .await
+        }));
+    }
+    tokio::time::timeout(Duration::from_secs(1), gate.entered.acquire_many(6))
+        .await
+        .expect("all six unknown auth lookups must reach the held upstream")
+        .unwrap()
+        .forget();
+
+    let snapshot = tokio::time::timeout(
+        Duration::from_secs(1),
+        discovery.get_from_peer(&known, false, known_peer),
+    )
+    .await
+    .expect("known auth and its shard must remain available during the storm")
+    .unwrap();
+    assert!(snapshot.tools.iter().any(|tool| tool == "kv_read"));
+    assert!(blocked.iter().all(|request| !request.is_finished()));
+    assert_eq!(
+        stub.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(token, path)| {
+                token == "known-read-token" && path == "auth/token/lookup-self"
+            })
+            .count(),
+        2
+    );
+
+    gate.release.add_permits(6);
+    for request in blocked {
+        assert_eq!(request.await.unwrap().unwrap_err().status, 403);
+    }
     server.abort();
 }
 

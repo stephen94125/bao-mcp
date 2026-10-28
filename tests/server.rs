@@ -10,7 +10,7 @@ use bao_mcp::{
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 use tokio_stream::StreamExt;
@@ -18,6 +18,8 @@ use tower::ServiceExt;
 #[derive(Clone, Default)]
 struct Counts {
     lookup: Arc<AtomicUsize>,
+    rejected_lookup: Arc<AtomicUsize>,
+    invalid_auth_gate: Arc<Mutex<Option<Arc<tokio::sync::Semaphore>>>>,
     requests: Arc<AtomicUsize>,
 }
 async fn upstream(State(counts): State<Counts>, request: Request) -> axum::response::Response {
@@ -29,6 +31,13 @@ async fn upstream(State(counts): State<Counts>, request: Request) -> axum::respo
         .to_str()
         .unwrap();
     if !["synthetic-client-a", "synthetic-client-b"].contains(&token) {
+        if request.uri().path() == "/v1/auth/token/lookup-self" {
+            counts.rejected_lookup.fetch_add(1, Ordering::SeqCst);
+            let gate = counts.invalid_auth_gate.lock().unwrap().clone();
+            if let Some(gate) = gate {
+                gate.acquire().await.unwrap().forget();
+            }
+        }
         return (
             http::StatusCode::FORBIDDEN,
             Json(json!({"errors":["sensitive diagnostic"]})),
@@ -359,5 +368,86 @@ async fn body_deadline_does_not_cancel_a_dispatched_mutation() {
     assert_eq!(status, 200);
     assert_ne!(response["result"]["isError"], true);
     assert_eq!(counts.requests.load(Ordering::SeqCst), 1);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn forwarded_headers_cannot_change_the_authentication_source_bucket() {
+    let (_temp, app, counts, handle) = fixture().await;
+    let peer = "192.0.2.20:4321".parse::<std::net::SocketAddr>().unwrap();
+    for i in 0..8 {
+        let request = http::Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("host", "localhost")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer invalid-{i}"))
+            .header("x-forwarded-for", format!("198.51.100.{i}"))
+            .header("forwarded", format!("for=198.51.100.{i}"))
+            .extension(axum::extract::ConnectInfo(peer))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status().as_u16(), if i < 4 { 403 } else { 429 });
+    }
+    assert_eq!(counts.rejected_lookup.load(Ordering::SeqCst), 4);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn duplicate_unknown_tokens_cannot_queue_all_http_request_slots() {
+    let (_temp, app, counts, handle) = fixture().await;
+    assert_eq!(
+        rpc(&app, Some("synthetic-client-a"), "tools/list", json!({}))
+            .await
+            .0,
+        200
+    );
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *counts.invalid_auth_gate.lock().unwrap() = Some(gate.clone());
+    let first_app = app.clone();
+    let first = tokio::spawn(async move {
+        rpc(&first_app, Some("invalid-held"), "tools/list", json!({})).await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while counts.rejected_lookup.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut duplicates = Vec::new();
+    for _ in 0..63 {
+        let app = app.clone();
+        duplicates.push(tokio::spawn(async move {
+            rpc(&app, Some("invalid-held"), "tools/list", json!({})).await
+        }));
+    }
+    // Six unknown-auth permits include the held lookup. All other callers must
+    // be rejected immediately, not queue while retaining the 64 HTTP permits.
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while duplicates
+            .iter()
+            .filter(|request| request.is_finished())
+            .count()
+            < 58
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("unknown shard waiters must be bounded before acquiring the lock");
+    assert_eq!(
+        rpc(&app, Some("synthetic-client-a"), "tools/list", json!({}))
+            .await
+            .0,
+        200
+    );
+    gate.add_permits(1);
+    assert_eq!(first.await.unwrap().0, 403);
+    for request in duplicates {
+        assert_eq!(request.await.unwrap().0, 429);
+    }
+    assert_eq!(counts.rejected_lookup.load(Ordering::SeqCst), 1);
     handle.abort();
 }

@@ -39,10 +39,13 @@ async fn run() -> bao_mcp::Result<()> {
         .await
         .map_err(|_| bao_mcp::Error::new(500, "listen_failed", "Cannot bind MCP_LISTEN"))?;
     tracing::info!(listen=%cfg.bind,"bao_mcp_started");
-    axum::serve(listener, router(app, &cfg))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await
-        .map_err(|_| bao_mcp::Error::internal())
+    axum::serve(
+        listener,
+        router(app, &cfg).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async {
+        let _ = tokio::signal::ctrl_c().await;
+    })
+    .await
+    .map_err(|_| bao_mcp::Error::internal())
 }

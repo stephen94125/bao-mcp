@@ -10,13 +10,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
+    net::IpAddr,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 
 const SHARDS: usize = 64;
-const MAX_ATTEMPTS_PER_SHARD: usize = 16;
+const MAX_TRACKED_CALLERS: usize = 1024;
+const VERIFIED_MAX_AGE: Duration = Duration::from_secs(300);
+const NEW_AUTH_PER_SECOND: usize = 24;
+const KNOWN_AUTH_PER_SECOND: usize = 8;
+const SOURCE_AUTH_PER_SECOND: usize = 4;
 const REFRESH_MIN: Duration = Duration::from_secs(5);
 const FETCHES_PER_SECOND: usize = 32;
 const MAX_PATHS: usize = 1024;
@@ -40,13 +45,104 @@ pub struct Discovery(Arc<Inner>);
 struct Inner {
     backend: Backend,
     cache: Cache,
-    shards: [Shard; SHARDS],
+    shards: [[AsyncMutex<()>; SHARDS]; 2],
+    admission: Mutex<Admission>,
+    new_auth: Semaphore,
+    known_auth: Semaphore,
     global_attempts: Mutex<VecDeque<Instant>>,
     concurrent: Semaphore,
 }
-struct Shard {
-    lock: AsyncMutex<()>,
-    attempts: Mutex<VecDeque<(String, Instant)>>,
+// This state only allocates admission capacity; it never authorizes a request.
+// Keep hashes, not raw tokens, and never evict live verified callers for new ones.
+#[derive(Default)]
+struct Admission {
+    verified: BTreeMap<String, Verified>,
+    unknown_attempts: BTreeMap<String, Instant>,
+    sources: BTreeMap<Option<IpAddr>, VecDeque<Instant>>,
+    new_attempts: VecDeque<Instant>,
+    known_attempts: VecDeque<Instant>,
+}
+struct Verified {
+    until: Instant,
+    last_attempt: Option<Instant>,
+}
+fn prune_rate(attempts: &mut VecDeque<Instant>, time: Instant) {
+    while attempts
+        .front()
+        .is_some_and(|t| time.saturating_duration_since(*t) >= Duration::from_secs(1))
+    {
+        attempts.pop_front();
+    }
+}
+impl Admission {
+    fn prune(&mut self, time: Instant) {
+        self.verified.retain(|_, value| value.until > time);
+        self.unknown_attempts
+            .retain(|_, t| time.saturating_duration_since(*t) < REFRESH_MIN);
+        self.sources.retain(|_, attempts| {
+            prune_rate(attempts, time);
+            !attempts.is_empty()
+        });
+        prune_rate(&mut self.new_attempts, time);
+        prune_rate(&mut self.known_attempts, time);
+    }
+    fn known(&mut self, hash: &str, time: Instant) -> bool {
+        self.prune(time);
+        self.verified.contains_key(hash)
+    }
+    fn reserve(&mut self, hash: &str, peer: Option<IpAddr>, time: Instant) -> Result<bool> {
+        self.prune(time);
+        if let Some(caller) = self.verified.get_mut(hash) {
+            if caller
+                .last_attempt
+                .is_some_and(|t| time.saturating_duration_since(t) < REFRESH_MIN)
+                || self.known_attempts.len() >= KNOWN_AUTH_PER_SECOND
+            {
+                return Err(throttled());
+            }
+            caller.last_attempt = Some(time);
+            self.known_attempts.push_back(time);
+            return Ok(true);
+        }
+        if self.unknown_attempts.contains_key(hash)
+            || self.unknown_attempts.len() >= MAX_TRACKED_CALLERS
+            || self.new_attempts.len() >= NEW_AUTH_PER_SECOND
+            || self
+                .sources
+                .get(&peer)
+                .is_some_and(|v| v.len() >= SOURCE_AUTH_PER_SECOND)
+            || (!self.sources.contains_key(&peer) && self.sources.len() >= MAX_TRACKED_CALLERS)
+        {
+            return Err(throttled());
+        }
+        self.unknown_attempts.insert(hash.into(), time);
+        self.sources.entry(peer).or_default().push_back(time);
+        self.new_attempts.push_back(time);
+        Ok(false)
+    }
+    fn remember(&mut self, hash: &str, ttl: u64, time: Instant) {
+        self.prune(time);
+        if self.verified.contains_key(hash) || self.verified.len() < MAX_TRACKED_CALLERS {
+            let lifetime = if ttl == 0 {
+                VERIFIED_MAX_AGE
+            } else {
+                VERIFIED_MAX_AGE.min(Duration::from_secs(ttl))
+            };
+            self.verified.insert(
+                hash.into(),
+                Verified {
+                    until: time + lifetime,
+                    last_attempt: Some(time),
+                },
+            );
+        }
+    }
+    fn invalidate(&mut self, hash: &str) {
+        self.unknown_attempts.remove(hash);
+        if let Some(caller) = self.verified.get_mut(hash) {
+            caller.last_attempt = None;
+        }
+    }
 }
 
 impl Discovery {
@@ -54,16 +150,27 @@ impl Discovery {
         Self(Arc::new(Inner {
             backend,
             cache,
-            shards: std::array::from_fn(|_| Shard {
-                lock: AsyncMutex::new(()),
-                attempts: Mutex::new(VecDeque::new()),
-            }),
+            shards: std::array::from_fn(|_| std::array::from_fn(|_| AsyncMutex::new(()))),
+            admission: Mutex::new(Admission::default()),
+            new_auth: Semaphore::new(6),
+            known_auth: Semaphore::new(2),
             global_attempts: Mutex::new(VecDeque::new()),
             concurrent: Semaphore::new(8),
         }))
     }
 
     pub async fn get(&self, credential: &Credential, refresh: bool) -> Result<Snapshot> {
+        self.get_from_peer(credential, refresh, None).await
+    }
+
+    /// Only pass the transport peer, never caller-supplied forwarding headers.
+    /// Without peer information, all unknown callers share a conservative bucket.
+    pub async fn get_from_peer(
+        &self,
+        credential: &Credential,
+        refresh: bool,
+        peer: Option<IpAddr>,
+    ) -> Result<Snapshot> {
         let scope = self.0.backend.scope_id();
         let hash = credential.hash();
         if !refresh {
@@ -71,16 +178,34 @@ impl Discovery {
                 return Ok(snapshot);
             }
         }
-        let shard = &self.0.shards[shard_index(&hash)];
-        let _lock = shard.lock.lock().await;
+        let known = self
+            .0
+            .admission
+            .lock()
+            .map_err(|_| Error::internal())?
+            .known(&hash, Instant::now());
+        // Bound waiters before they can hold HTTP slots on a shard lock.
+        // In particular, duplicate unknown tokens must not form an unbounded
+        // queue ahead of authentication admission.
+        let auth = if known {
+            &self.0.known_auth
+        } else {
+            &self.0.new_auth
+        };
+        let auth_permit = auth.try_acquire().map_err(|_| throttled())?;
+        // Unknown token traffic cannot hold a verified caller's shard lock.
+        let shard = &self.0.shards[usize::from(known)][shard_index(&hash)];
+        let _lock = shard.lock().await;
         if !refresh {
             if let Some(snapshot) = self.0.cache.load(&scope, &hash).await? {
                 return Ok(snapshot);
             }
         }
-        // All cold/refresh attempts consume the same bounded rate budget, including unknown tokens.
-        self.reserve_attempt(shard, &hash, Instant::now())?;
-        let _permit = self.0.concurrent.try_acquire().map_err(|_| throttled())?;
+        self.0
+            .admission
+            .lock()
+            .map_err(|_| Error::internal())?
+            .reserve(&hash, peer, Instant::now())?;
         let fetched_at = now();
         // Never persist this raw response: data.id contains the caller's token.
         let identity = match self
@@ -100,6 +225,12 @@ impl Discovery {
             Err(error) => {
                 if matches!(error.status, 401 | 403) {
                     self.0.cache.invalidate(&scope, &hash).await?;
+                    self.0
+                        .admission
+                        .lock()
+                        .map_err(|_| Error::internal())?
+                        .verified
+                        .remove(&hash);
                 }
                 return Err(error);
             }
@@ -116,6 +247,15 @@ impl Discovery {
                 )
             })?;
         drop(identity);
+        self.0
+            .admission
+            .lock()
+            .map_err(|_| Error::internal())?
+            .remember(&hash, ttl, Instant::now());
+        drop(auth_permit);
+        // Invalid tokens never consume the expensive metadata discovery quota.
+        self.reserve_fetch(Instant::now())?;
+        let _permit = self.0.concurrent.try_acquire().map_err(|_| throttled())?;
         let expires_at = self.0.cache.fresh_until(fetched_at).min(if ttl == 0 {
             u64::MAX
         } else {
@@ -146,20 +286,15 @@ impl Discovery {
         // A native permission failure invalidates discovery, but must not lock
         // a valid caller out of its other paths for the refresh cooldown.
         // Revalidation still consumes the bounded process-wide fetch budget.
-        self.0.shards[shard_index(&hash)]
-            .attempts
+        self.0
+            .admission
             .lock()
             .map_err(|_| Error::internal())?
-            .retain(|(key, _)| key != &hash);
+            .invalidate(&hash);
         Ok(())
     }
 
-    fn reserve_attempt(&self, shard: &Shard, hash: &str, instant: Instant) -> Result<()> {
-        let mut attempts = shard.attempts.lock().map_err(|_| Error::internal())?;
-        attempts.retain(|(_, time)| instant.saturating_duration_since(*time) < REFRESH_MIN);
-        if attempts.iter().any(|(key, _)| key == hash) {
-            return Err(throttled());
-        }
+    fn reserve_fetch(&self, instant: Instant) -> Result<()> {
         let mut global = self
             .0
             .global_attempts
@@ -175,11 +310,6 @@ impl Discovery {
             return Err(throttled());
         }
         global.push_back(instant);
-        // Do not evict recent per-key limits: reject a full shard instead.
-        if attempts.len() >= MAX_ATTEMPTS_PER_SHARD {
-            return Err(throttled());
-        }
-        attempts.push_back((hash.to_owned(), instant));
         Ok(())
     }
 
@@ -695,51 +825,76 @@ mod tests {
         );
         assert!(!valid_path("secret/+/credentials"));
     }
+
     #[test]
-    fn refresh_attempts_are_bounded_and_include_unknown_tokens() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = Cache::open(
-            &dir.path().join("cache.db"),
-            Duration::from_secs(10),
-            Duration::from_secs(10),
-            2,
-        )
-        .unwrap();
-        let backend = Backend::new(
-            "http://127.0.0.1:1",
-            "agent",
-            None,
-            false,
-            Duration::from_secs(1),
-        )
-        .unwrap();
-        let discovery = Discovery::new(backend, cache);
-        let instant = Instant::now();
-        let shard = &discovery.0.shards[0];
-        discovery
-            .reserve_attempt(shard, "invalid-token-hash", instant)
-            .unwrap();
+    fn authentication_lanes_are_bounded_and_independent() {
+        let mut admission = Admission::default();
+        let time = Instant::now();
+        for i in 0..NEW_AUTH_PER_SECOND {
+            let peer = Some(IpAddr::from([192, 0, 2, i as u8]));
+            assert!(
+                !admission
+                    .reserve(&format!("unknown-{i}"), peer, time)
+                    .unwrap()
+            );
+        }
         assert_eq!(
-            discovery
-                .reserve_attempt(shard, "invalid-token-hash", instant)
+            admission
+                .reserve("overflow", None, time)
                 .unwrap_err()
                 .status,
             429
         );
-        discovery
-            .reserve_attempt(shard, "invalid-token-hash", instant + REFRESH_MIN)
-            .unwrap();
-        for i in 0..MAX_ATTEMPTS_PER_SHARD - 1 {
-            discovery
-                .reserve_attempt(shard, &i.to_string(), instant + REFRESH_MIN)
+        for i in 0..KNOWN_AUTH_PER_SECOND {
+            let hash = format!("known-{i}");
+            admission.remember(&hash, 3600, time - REFRESH_MIN);
+            assert!(admission.reserve(&hash, None, time).unwrap());
+        }
+        admission.remember("known-overflow", 3600, time - REFRESH_MIN);
+        assert!(admission.reserve("known-overflow", None, time).is_err());
+        assert!(
+            admission
+                .reserve(
+                    "unknown-0",
+                    Some(IpAddr::from([192, 0, 2, 0])),
+                    time + REFRESH_MIN
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn source_and_token_limits_do_not_evict_live_records() {
+        let mut admission = Admission::default();
+        let time = Instant::now();
+        for i in 0..SOURCE_AUTH_PER_SECOND {
+            admission
+                .reserve(&format!("token-{i}"), None, time)
                 .unwrap();
         }
+        assert!(admission.reserve("fifth-token", None, time).is_err());
         assert!(
-            discovery
-                .reserve_attempt(shard, "overflow", instant + REFRESH_MIN)
+            admission
+                .reserve("token-0", Some(IpAddr::from([192, 0, 2, 1])), time)
                 .is_err()
         );
-        assert_eq!(shard.attempts.lock().unwrap().len(), MAX_ATTEMPTS_PER_SHARD);
+        assert!(
+            admission
+                .reserve("other-source", Some(IpAddr::from([192, 0, 2, 1])), time)
+                .is_ok()
+        );
+        for i in 0..MAX_TRACKED_CALLERS {
+            admission.remember(&format!("verified-{i}"), 3600, time);
+        }
+        admission.remember("untracked", 3600, time);
+        assert_eq!(admission.verified.len(), MAX_TRACKED_CALLERS);
+        assert!(!admission.known("untracked", time));
+        assert!(admission.known("verified-0", time));
+        admission.invalidate("verified-0");
+        assert!(admission.reserve("verified-0", None, time).unwrap());
+        assert!(!admission.known("verified-0", time + VERIFIED_MAX_AGE));
+        admission.remember("short", 1, time + VERIFIED_MAX_AGE);
+        assert!(!admission.known("short", time + VERIFIED_MAX_AGE + Duration::from_secs(1)));
     }
 }
 
