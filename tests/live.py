@@ -23,8 +23,8 @@ import urllib.parse
 import urllib.request
 
 
-ROOT = Path(__file__).resolve().parents[2]
-APP = ROOT / "bao-mcp"
+ROOT = Path(__file__).resolve().parents[1]
+APP = ROOT
 OUTPUT = APP / "test-output"
 TIMEOUT = 20
 LIMIT = 8 * 1024 * 1024
@@ -94,9 +94,17 @@ def dotenv_data(path: Path) -> dict[str, str]:
         if len(words) != 1 or "=" not in words[0]:
             continue
         name, value = words[0].split("=", 1)
-        if name in {"OPENBAO_URL", "OPENBAO_TOKEN", "OPENBAO_NAMESPACE", "OPENBAO_CA_FILE"}:
+        if name in {"BAO_ADDR", "BAO_TOKEN", "BAO_NAMESPACE", "BAO_CACERT", "OPENBAO_URL", "OPENBAO_TOKEN", "OPENBAO_NAMESPACE", "OPENBAO_CA_FILE"}:
             values[name] = value
     return values
+
+
+def configured_value(values: dict[str, str], *names: str) -> str | None:
+    for source in (os.environ, values):
+        for name in names:
+            if source.get(name):
+                return source[name]
+    return None
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -243,13 +251,12 @@ class Run:
             if args.only:
                 raise Blocked("--only requires --state pointing to retained fixtures")
             env = dotenv_data(ROOT / ".env")
-            pick = lambda key: os.environ.get(key) or env.get(key)
-            address = os.environ.get("BAO_ADDR") or pick("OPENBAO_URL")
-            token = pick("OPENBAO_TOKEN")
-            namespace = os.environ.get("BAO_NAMESPACE") or pick("OPENBAO_NAMESPACE") or "agent"
-            ca = os.environ.get("BAO_CACERT") or pick("OPENBAO_CA_FILE")
+            address = configured_value(env, "BAO_ADDR", "OPENBAO_URL")
+            token = configured_value(env, "BAO_TOKEN", "OPENBAO_TOKEN")
+            namespace = configured_value(env, "BAO_NAMESPACE", "OPENBAO_NAMESPACE") or "agent"
+            ca = configured_value(env, "BAO_CACERT", "OPENBAO_CA_FILE")
             if not address or not token:
-                raise Blocked("BAO_ADDR/OPENBAO_URL and OPENBAO_TOKEN are required")
+                raise Blocked("BAO_ADDR and BAO_TOKEN (or their OPENBAO aliases) are required")
             parsed = urllib.parse.urlsplit(address)
             if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
                 raise Blocked("the OpenBao address must be an HTTP(S) base URL without embedded credentials")

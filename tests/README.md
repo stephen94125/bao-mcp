@@ -1,17 +1,30 @@
-# Live regression / 在线回归测试
+# Tests / 测试
+
+The environment setup script has isolated CLI and terminal tests:
+
+```sh
+python3 tests/setup_bao_environment.py
+```
+
+These use a mock Bao CLI and cover token prompting, namespace/policy reuse,
+credential-file handling, and failure cases without contacting a server.
+设置脚本测试使用模拟 Bao CLI，覆盖 Token 输入、namespace／Policy 复用、凭证文件
+处理及失败情况，不连接真实服务器。
+
+## Live regression / 在线回归测试
 
 The live harness is opt-in and uses only Python's standard library plus optional
 `ssh-keygen`. Build the gateway first, then run **one full pass** from the repository
 root:
 
 ```sh
-cargo build --manifest-path bao-mcp/Cargo.toml
-python3 bao-mcp/tests/live.py --live
+cargo build --locked
+python3 tests/live.py --live
 ```
 
 It reads the root `.env` **as data**, without shell execution. Existing environment
 variables take precedence. Supported inputs are `BAO_ADDR` / `OPENBAO_URL`,
-`OPENBAO_TOKEN`, `BAO_NAMESPACE` / `OPENBAO_NAMESPACE` (default `agent`), and optional
+`BAO_TOKEN` / `OPENBAO_TOKEN`, `BAO_NAMESPACE` / `OPENBAO_NAMESPACE` (default `agent`), and optional
 `BAO_CACERT` / `OPENBAO_CA_FILE`. The source token must be able to create a child
 namespace and issue its limited fixture tokens. Missing namespace permission stops
 setup; the harness never falls back to an existing namespace. The gateway runs with
@@ -35,7 +48,7 @@ certificates, and Transit keys. Native version deletion/undeletion and one token
 revocation are the explicit tested operations; no teardown deletes remote data.
 The harness only terminates its own local gateway process.
 
-Private output is stored under ignored `bao-mcp/test-output/<run-id>/`, with directory
+Private output is stored under ignored `test-output/<run-id>/`, with directory
 mode `0700` and file mode `0600`:
 
 - `results.json`: sanitized passed/failed/blocked checks and retained backend paths.
@@ -50,12 +63,12 @@ details are suppressed in console output, including backend error bodies.
 Fix only failed scopes, then reuse the printed state path to rerun a check or family:
 
 ```sh
-python3 bao-mcp/tests/live.py --live \
-  --state bao-mcp/test-output/<run-id>/state.json --only kv
-python3 bao-mcp/tests/live.py --live \
-  --state bao-mcp/test-output/<run-id>/state.json \
+python3 tests/live.py --live \
+  --state test-output/<run-id>/state.json --only kv
+python3 tests/live.py --live \
+  --state test-output/<run-id>/state.json \
   --only cache.refresh_scope_and_revocation --only cache.no_plaintext_credentials
-python3 bao-mcp/tests/live.py --list
+python3 tests/live.py --list
 ```
 
 Retained-state execution requires `--only`; it cannot silently rerun the full suite.
@@ -81,7 +94,7 @@ KV 版本和 CAS、SSH CA、PKI、Transit、原生策略与令牌、缓存刷新
 所有远端测试资源均保留供检查，不执行清理。KV 版本删除后恢复，以及撤销一个专用
 测试令牌，属于被验证的操作。只有脚本自行启动的本地服务进程会被结束。
 
-输出保存在已忽略的 `bao-mcp/test-output/<run-id>/`，目录权限为 `0700`，文件权限
+输出保存在已忽略的 `test-output/<run-id>/`，目录权限为 `0700`，文件权限
 为 `0600`。`results.json` 仅含脱敏结果和后端路径；`state.json`、
 `private-artifacts.json`、SSH 私钥及相关文件可能包含秘密，禁止输出或提交。
 控制台不输出请求、响应、后端错误正文或异常详情。
