@@ -34,7 +34,14 @@ impl TestServer {
     }
 
     fn backend(&self, namespace: &str) -> Backend {
-        Backend::new(&self.address, namespace, None, Duration::from_secs(3)).unwrap()
+        Backend::new(
+            &self.address,
+            namespace,
+            None,
+            false,
+            Duration::from_secs(3),
+        )
+        .unwrap()
     }
 }
 
@@ -260,7 +267,7 @@ fn credentials_and_config_validate_without_revealing_token_values() {
         " http://example.test",
         "http://example.test\n",
     ] {
-        assert!(Backend::new(address, "agent", None, Duration::from_secs(1)).is_err());
+        assert!(Backend::new(address, "agent", None, false, Duration::from_secs(1)).is_err());
     }
     for namespace in [
         "agent\r\nX-Vault-Token: fake",
@@ -268,24 +275,54 @@ fn credentials_and_config_validate_without_revealing_token_values() {
         "agent/../root",
         "agent%2froot",
     ] {
-        assert!(Backend::new("http://127.0.0.1", namespace, None, Duration::from_secs(1)).is_err());
+        assert!(
+            Backend::new(
+                "http://127.0.0.1",
+                namespace,
+                None,
+                false,
+                Duration::from_secs(1)
+            )
+            .is_err()
+        );
     }
-    assert!(Backend::new("http://127.0.0.1", "agent", None, Duration::ZERO).is_err());
+    assert!(Backend::new("http://127.0.0.1", "agent", None, false, Duration::ZERO).is_err());
 }
 
 #[test]
 fn scope_hash_uses_canonical_origin_and_fixed_namespace() {
-    let canonical =
-        Backend::new("http://example.test", "agent", None, Duration::from_secs(1)).unwrap();
+    let canonical = Backend::new(
+        "http://example.test",
+        "agent",
+        None,
+        false,
+        Duration::from_secs(1),
+    )
+    .unwrap();
     let equivalent = Backend::new(
         "HTTP://EXAMPLE.TEST:80/",
         "/agent/",
         None,
+        false,
         Duration::from_secs(1),
     )
     .unwrap();
-    let other = Backend::new("http://example.test", "other", None, Duration::from_secs(1)).unwrap();
-    let root = Backend::new("http://example.test", "", None, Duration::from_secs(1)).unwrap();
+    let other = Backend::new(
+        "http://example.test",
+        "other",
+        None,
+        false,
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    let root = Backend::new(
+        "http://example.test",
+        "",
+        None,
+        false,
+        Duration::from_secs(1),
+    )
+    .unwrap();
     assert_eq!(canonical.scope_id(), equivalent.scope_id());
     assert_ne!(canonical.scope_id(), other.scope_id());
     assert_ne!(canonical.scope_id(), root.scope_id());
@@ -427,7 +464,14 @@ async fn timeouts_report_unknown_mutation_outcome_without_retry() {
         }),
     ))
     .await;
-    let backend = Backend::new(&server.address, "agent", None, Duration::from_millis(50)).unwrap();
+    let backend = Backend::new(
+        &server.address,
+        "agent",
+        None,
+        false,
+        Duration::from_millis(50),
+    )
+    .unwrap();
     let credential = Credential::new("test-token").unwrap();
     let read = backend
         .request(&credential, "read", "slow", None, &[], None)

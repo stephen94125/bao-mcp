@@ -705,8 +705,14 @@ mod tests {
             2,
         )
         .unwrap();
-        let backend =
-            Backend::new("http://127.0.0.1:1", "agent", None, Duration::from_secs(1)).unwrap();
+        let backend = Backend::new(
+            "http://127.0.0.1:1",
+            "agent",
+            None,
+            false,
+            Duration::from_secs(1),
+        )
+        .unwrap();
         let discovery = Discovery::new(backend, cache);
         let instant = Instant::now();
         let shard = &discovery.0.shards[0];

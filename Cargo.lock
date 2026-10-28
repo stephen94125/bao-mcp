@@ -135,6 +135,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "tokio-stream",
  "tower",
  "tower-http",

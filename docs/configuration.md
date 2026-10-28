@@ -16,6 +16,7 @@ Bao MCP.
 | `BAO_ADDR` | required | OpenBao HTTP(S) origin, such as `https://bao.example.com:8200` |
 | `BAO_NAMESPACE` | `agent` | Existing namespace; nested namespaces are supported |
 | `BAO_CACERT` | system trust | Optional PEM CA bundle for the Bao connection |
+| `BAO_SKIP_VERIFY` | `false` | `true` or `1` bypasses Bao HTTPS certificate and hostname verification; `false` or `0` keeps verification enabled |
 | `MCP_LISTEN` | `127.0.0.1:8000` | MCP listener address |
 | `MCP_ALLOWED_HOSTS` | loopback hosts | Additional comma-separated HTTP Host patterns |
 | `MCP_ALLOWED_ORIGINS` | loopback HTTP origins | Additional comma-separated browser origins |
@@ -51,7 +52,10 @@ including a port pattern such as `bao-mcp.example.com:*`. An Origin includes its
 scheme, for example `https://agent-ui.example.com`. Browser clients may require
 an origin entry; each caller still supplies its own bearer token.
 
-Use `BAO_CACERT` for a private Bao CA. The client verifies TLS certificates.
+Use `BAO_CACERT` for a private Bao CA. Certificate and hostname verification are
+enabled by default. For a test server, `BAO_SKIP_VERIFY=true` bypasses both checks;
+enable it only when you accept that loss of peer verification. The option also
+accepts `1`/`0`; other values stop startup.
 The HTTP request limit is 2 MiB and the Bao response limit is 8 MiB. Upstream
 redirects and automatic retries are disabled.
 

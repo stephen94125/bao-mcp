@@ -64,6 +64,7 @@ impl Backend {
         addr: &str,
         namespace: &str,
         ca_file: Option<&Path>,
+        skip_verify: bool,
         timeout: Duration,
     ) -> Result<Self> {
         let address = validate_address(addr)?;
@@ -78,6 +79,11 @@ impl Backend {
             .referer(false)
             .timeout(timeout)
             .connect_timeout(timeout);
+        if skip_verify {
+            builder = builder
+                .tls_danger_accept_invalid_certs(true)
+                .tls_danger_accept_invalid_hostnames(true);
+        }
         if let Some(path) = ca_file {
             let pem = std::fs::read(path)
                 .map_err(|_| Error::invalid("The OpenBao CA file could not be read"))?;

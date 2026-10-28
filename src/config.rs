@@ -6,6 +6,7 @@ pub struct Config {
     pub namespace: String,
     pub bind: SocketAddr,
     pub ca_file: Option<PathBuf>,
+    pub skip_verify: bool,
     pub cache_path: PathBuf,
     pub cache_idle_ttl: Duration,
     pub cache_max_age: Duration,
@@ -41,6 +42,15 @@ impl Config {
                 .map(String::from)
                 .collect()
         };
+        let skip_verify = match get("BAO_SKIP_VERIFY").as_deref() {
+            None | Some("false" | "0") => false,
+            Some("true" | "1") => true,
+            Some(_) => {
+                return Err(Error::invalid(
+                    "BAO_SKIP_VERIFY must be true, false, 1 or 0",
+                ));
+            }
+        };
         let namespace = get("BAO_NAMESPACE")
             .unwrap_or_else(|| "agent".into())
             .trim_matches('/')
@@ -75,6 +85,7 @@ impl Config {
             ca_file: get("BAO_CACERT")
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from),
+            skip_verify,
             cache_path: get("CACHE_PATH")
                 .unwrap_or_else(|| "cache.db".into())
                 .into(),
@@ -96,7 +107,31 @@ mod tests {
             Config::from_values(|k| (k == "BAO_ADDR").then(|| "http://127.0.0.1:8200".into()))
                 .unwrap();
         assert_eq!(cfg.namespace, "agent");
+        assert!(!cfg.skip_verify);
         assert_eq!(cfg.cache_path, PathBuf::from("cache.db"));
+    }
+    #[test]
+    fn skip_verify_requires_an_explicit_boolean() {
+        for (value, expected) in [("true", true), ("1", true), ("false", false), ("0", false)] {
+            let cfg = Config::from_values(|key| match key {
+                "BAO_ADDR" => Some("https://localhost:8200".into()),
+                "BAO_SKIP_VERIFY" => Some(value.into()),
+                _ => None,
+            })
+            .unwrap();
+            assert_eq!(cfg.skip_verify, expected, "BAO_SKIP_VERIFY={value}");
+        }
+        for value in ["", "yes", "TRUE", "False", " 1", "2", "-1"] {
+            assert!(
+                Config::from_values(|key| match key {
+                    "BAO_ADDR" => Some("https://localhost:8200".into()),
+                    "BAO_SKIP_VERIFY" => Some(value.into()),
+                    _ => None,
+                })
+                .is_err(),
+                "BAO_SKIP_VERIFY={value} must be rejected",
+            );
+        }
     }
     #[test]
     fn reject_empty_namespace_and_unbounded_settings() {

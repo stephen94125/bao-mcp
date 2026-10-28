@@ -114,6 +114,7 @@ async fn setup() -> (
         &format!("http://{addr}"),
         "agent",
         None,
+        false,
         Duration::from_secs(2),
     )
     .unwrap();
@@ -233,6 +234,7 @@ async fn token_ttl_bounds_snapshot_and_scope_isolation_prevents_reuse() {
             "http://127.0.0.1:1",
             "agent",
             None,
+            false,
             Duration::from_millis(100),
         )
         .unwrap(),

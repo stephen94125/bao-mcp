@@ -69,6 +69,7 @@ impl Fixture {
                 &format!("http://{addr}"),
                 "agent",
                 None,
+                false,
                 Duration::from_secs(3),
             )
             .unwrap(),

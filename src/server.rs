@@ -37,6 +37,7 @@ impl App {
             &config.addr,
             &config.namespace,
             config.ca_file.as_deref(),
+            config.skip_verify,
             config.timeout,
         )?;
         let cache = Cache::open(
