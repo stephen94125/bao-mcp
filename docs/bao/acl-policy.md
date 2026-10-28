@@ -323,11 +323,18 @@ bao token create \
 
 ### Token issuance restrictions
 
-Directly selecting arbitrary policies in these examples assumes a root token.
+A root token, or a token with `sudo` on the token-creation endpoint, can issue
+namespace-local policies it does not itself carry. The broad administrator
+policies above include that capability on `auth/token/create`.
 
-An ordinary token carrying only `super-admin` remains subject to child-token policy inheritance rules, even with `path "*"`. It cannot freely attach policies it does not carry through ordinary token creation.
+Without that privilege, ordinary child-token creation restricts the requested
+policies to a subset of the parent's policies. An orphan request also needs the
+appropriate elevated permission. Token roles and auth methods let administrators
+define narrower issuance rules for delegated callers. These permissions do not
+turn an ordinary token into the special built-in `root` token.
 
-Use token roles or a suitably configured auth method when non-root administrators must issue tokens with different policies. `sudo` alone does not remove these issuance rules.
+See the [Token API](https://openbao.org/docs/api/auth/token/) and the ready-to-use
+[agent policy templates](../../scripts/bao/README.md#policies-for-the-agent-namespace).
 
 ## 8. Verify effective permissions
 
@@ -390,6 +397,6 @@ Policies belong to their namespaces; they are not child objects stored beneath e
 
 1. **Namespaces define administrative scope; policies grant operations on API paths.**
 2. **KV v2 policies must use native segments such as `data/` and `metadata/`.**
-3. **`path "*"` permits broad administration but does not create a root token or remove issuance restrictions.**
+3. **`path "*"` with `sudo` grants broad administration and privileged token issuance within the namespace, while the built-in `root` policy remains special.**
 
 These examples follow the documented OpenBao ACL syntax. Their original verification covered documentation; **these exact policy examples were not applied or exercised against a live server**.

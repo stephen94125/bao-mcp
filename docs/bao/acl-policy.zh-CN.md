@@ -323,11 +323,16 @@ bao token create \
 
 ### Token 签发限制
 
-上面直接指定任意 Policy 的方式，适用于使用 Root Token 签发。
+Root Token，或在 Token 建立端点具有 `sudo` 的 Token，可以签发包含其他
+namespace 本地 Policy 的 Token。上面的广泛管理员 Policy 已包含对
+`auth/token/create` 的这项权限。
 
-若目前登入的是只有 `super-admin` Policy 的普通 Token，即使它有 `path "*"`，一般直接建立子 Token 时仍受 Policy 继承限制，不能随便指定自己没有的其他 Policy。
+没有该权限时，一般子 Token 的 Policy 必须是父 Token Policy 的子集。要求 orphan
+也需要对应的高权限。Token Role 和 Auth Method 可供管理员为委派签发设置更窄的
+规则。这些权限不会将普通 Token 变成特殊的内建 `root` Token。
 
-正式要让非 Root 管理员替不同服务签发不同 Policy 的 Token，需要另外透过 Token Role 或合适的 Auth Method 设定签发机制。这是 OpenBao 官方的 Token 限制，不能单靠 `sudo` 消除。
+参见 [Token API](https://openbao.org/docs/api/auth/token/)，以及可直接套用的
+[agent Policy 模板](../../scripts/bao/README.md#policies-for-the-agent-namespace)。
 
 ## 八、怎么验证 Policy 真的有效？
 
@@ -390,6 +395,6 @@ Root Namespace
 
 1. **Namespace 决定管理边界，Policy 决定 API 路径的操作权限。**
 2. **KV v2 的 Policy 要使用 `data/`、`metadata/` 等真实 API 路径。**
-3. **`path "*"` 可以建立近乎全权的管理 Policy，但不会自动变成真正的 Root Token，也不会解除 Token 签发规则。**
+3. **`path "*"` 配合 `sudo` 可授予 namespace 内的广泛管理和特权 Token 签发权限；内建 `root` Policy 仍有特殊地位。**
 
 上述五种 Policy 的 HCL 依 OpenBao 官方 ACL 语法编写，可作为测试环境的配置范例；目前确认范围是官方文件，**尚未在实际 OpenBao Server 上套用或执行权限验证**。
