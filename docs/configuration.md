@@ -118,15 +118,59 @@ Text logs go to stderr and record the actor's token hash, tool name, resource ha
 result, and duration. Enable Bao audit separately for native request paths,
 identities, and operation history.
 
+## Building one executable
+
+The manifest explicitly declares `bao-mcp` as the executable target:
+
+```sh
+cargo build --release --locked --bin bao-mcp
+```
+
+Deploy `target/release/bao-mcp`. Cargo's intermediate Rust libraries are linked
+into this executable. SQLite uses its bundled source and TLS uses Rustls;
+separately installed OpenSSL and SQLite shared libraries are unnecessary.
+
+### Static Linux MUSL builds
+
+Use the build-only Docker recipe to export one Linux executable:
+
+```sh
+docker buildx build --platform linux/amd64 --target artifact \
+  --output type=local,dest=dist/x86_64-unknown-linux-musl \
+  -f Dockerfile.build .
+```
+
+For ARM64, use `--platform linux/arm64` and
+`dest=dist/aarch64-unknown-linux-musl`. Docker needs a working Linux builder;
+cross-architecture builds may require emulation. The allowlisted build context
+contains only the manifest, lockfile, Cargo configuration, and Rust sources.
+
+The MUSL target configuration explicitly enables `crt-static`. The recipe checks
+that the executable has neither an ELF interpreter nor shared-library `NEEDED`
+entries, then runs `--help` before exporting it. On a Linux host with the matching
+Rust target and MUSL C compiler, the equivalent build is:
+
+```sh
+cargo build --release --locked --bin bao-mcp --target x86_64-unknown-linux-musl
+```
+
+The resulting file is `target/x86_64-unknown-linux-musl/release/bao-mcp`.
+Static linking does not embed the operating system's trusted CA store; retain a
+system CA bundle or configure `BAO_CACERT` for verified HTTPS connections.
+
 ## Building on macOS with Nix
 
-If the Nix linker cannot find `libiconv`, use the system C toolchain and SDK:
+macOS executables use Apple's built-in libraries and frameworks. Apple does not
+support fully static executables; see its [Library Primer](https://developer.apple.com/forums/thread/715385).
+Only the executable needs to be distributed; the stock OS supplies those libraries.
+
+If Nix reports `cc`, `libiconv`, or linker errors, use the system C toolchain and SDK:
 
 ```sh
 CC=/usr/bin/clang CXX=/usr/bin/clang++ \
-SDKROOT="$(xcrun --show-sdk-path)" \
+SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" \
 CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/clang \
-cargo build --release --locked
+cargo build --release --locked --bin bao-mcp
 ```
 
 The linker variable above is for Apple Silicon. Use the matching target linker

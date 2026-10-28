@@ -1,0 +1,19 @@
+# Build-only recipe: export the artifact stage as a single Linux executable.
+FROM rust:1.92-alpine AS build
+RUN apk add --no-cache build-base cmake perl binutils
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY .cargo/ .cargo/
+COPY src/ src/
+RUN target="$(rustc -vV | sed -n 's/^host: //p')" \
+    && cargo build --release --locked --bin bao-mcp --target "$target" \
+    && mkdir /out \
+    && cp "target/$target/release/bao-mcp" /out/bao-mcp \
+    && readelf -lW /out/bao-mcp > /tmp/program-headers \
+    && readelf -dW /out/bao-mcp > /tmp/dynamic-tags \
+    && ! grep -q INTERP /tmp/program-headers \
+    && ! grep -q NEEDED /tmp/dynamic-tags \
+    && /out/bao-mcp --help
+
+FROM scratch AS artifact
+COPY --from=build /out/bao-mcp /bao-mcp

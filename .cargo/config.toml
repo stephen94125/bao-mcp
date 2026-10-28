@@ -1,0 +1,3 @@
+# Static C runtime for Linux MUSL executables; other targets keep platform defaults.
+[target.'cfg(all(target_os = "linux", target_env = "musl"))']
+rustflags = ["-C", "target-feature=+crt-static"]

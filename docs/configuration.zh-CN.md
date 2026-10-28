@@ -103,15 +103,55 @@ Bao 2.7.2 内部的 resultant ACL 信息省略 `+` 单层通配规则，capabili
 文字日志写入 stderr，记录 Token hash、工具、资源 hash、结果和耗时。需要原生请求
 路径、身份与操作历史时，另外启用 Bao audit。
 
+## 构建单个可执行文件
+
+Manifest 已显式声明 `bao-mcp` 可执行目标：
+
+```sh
+cargo build --release --locked --bin bao-mcp
+```
+
+部署时使用 `target/release/bao-mcp`。Cargo 产生的 Rust 中间库会链接进此文件。
+SQLite 使用 bundled 源码，TLS 使用 Rustls，无需另装 OpenSSL 或 SQLite 动态库。
+
+### Linux MUSL 全静态构建
+
+通过只用于构建的 Docker 配方导出单个 Linux 可执行文件：
+
+```sh
+docker buildx build --platform linux/amd64 --target artifact \
+  --output type=local,dest=dist/x86_64-unknown-linux-musl \
+  -f Dockerfile.build .
+```
+
+ARM64 改用 `--platform linux/arm64` 和 `dest=dist/aarch64-unknown-linux-musl`。
+Docker 需要可用的 Linux builder，跨 CPU 架构时可能需要模拟器。构建上下文仅包含
+manifest、lockfile、Cargo 配置及 Rust 源码。
+
+MUSL 目标配置显式启用 `crt-static`。配方会检查 ELF 不含 interpreter 或共享库
+`NEEDED` 项目，执行 `--help` 后才导出文件。在已安装对应 Rust target 和 MUSL C
+编译器的 Linux 主机上，也可直接执行：
+
+```sh
+cargo build --release --locked --bin bao-mcp --target x86_64-unknown-linux-musl
+```
+
+产物位于 `target/x86_64-unknown-linux-musl/release/bao-mcp`。静态链接不会嵌入
+系统信任的 CA store；需要验证 HTTPS 时，应保留系统 CA bundle 或设置 `BAO_CACERT`。
+
 ## macOS / Nix 构建
 
-如果 Nix linker 找不到 `libiconv`，使用系统 C 工具链与 SDK：
+macOS 使用 Apple 内建的系统库与 framework。Apple 不支持完全静态的可执行文件，
+详见 [Library Primer](https://developer.apple.com/forums/thread/715385)。部署时只需复制
+可执行文件，这些库由操作系统提供。
+
+如果 Nix 报告 `cc`、`libiconv` 或链接错误，可使用系统 C 工具链与 SDK：
 
 ```sh
 CC=/usr/bin/clang CXX=/usr/bin/clang++ \
-SDKROOT="$(xcrun --show-sdk-path)" \
+SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" \
 CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/clang \
-cargo build --release --locked
+cargo build --release --locked --bin bao-mcp
 ```
 
 上面的 linker 变量用于 Apple Silicon；Intel Mac 应使用对应目标的变量。

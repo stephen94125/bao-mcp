@@ -95,9 +95,14 @@ Orphan 表示该 Token 的生命周期独立于设置时使用的 Token。服务
 在源码仓库根目录执行：
 
 ```sh
-cargo build --release --locked
+cargo build --release --locked --bin bao-mcp
 BAO_NAMESPACE=agent ./target/release/bao-mcp serve
 ```
+
+Release 产物是单个可执行文件 `target/release/bao-mcp`，SQLite 和 TLS 实现会链接
+到该文件。Linux 全静态构建见 [MUSL 构建说明](docs/configuration.zh-CN.md#linux-musl-全静态构建)。
+macOS 使用 Apple 内建系统库；若 Nix 环境报告 `cc` 或链接错误，请用
+[完整 macOS 编译命令](docs/configuration.zh-CN.md#macos--nix-构建)。
 
 服务会使用第一步设置的 `BAO_ADDR`，默认 MCP 地址为 `http://127.0.0.1:8000/mcp`。
 保持服务运行，再让 Agent 连接。

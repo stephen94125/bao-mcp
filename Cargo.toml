@@ -3,7 +3,12 @@ name = "bao-mcp"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
+autobins = false
 license = "Apache-2.0"
+
+[[bin]]
+name = "bao-mcp"
+path = "src/main.rs"
 
 [dependencies]
 axum = "0.8"

@@ -1,0 +1,9 @@
+# Send only build inputs, including when Docker uses a remote builder.
+**
+!Cargo.toml
+!Cargo.lock
+!.cargo/
+.cargo/**
+!.cargo/config.toml
+!src/
+!src/**

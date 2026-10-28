@@ -7,3 +7,6 @@
 .token
 *.token
 /openbao/
+
+# Exported release binaries.
+/dist/

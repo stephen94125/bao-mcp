@@ -102,9 +102,16 @@ the request, and the explicit maximum limits its total lifetime.
 From a source checkout, run:
 
 ```sh
-cargo build --release --locked
+cargo build --release --locked --bin bao-mcp
 BAO_NAMESPACE=agent ./target/release/bao-mcp serve
 ```
+
+The release artifact is the single executable `target/release/bao-mcp`. SQLite
+and the TLS implementation are linked into it. For a fully static Linux build,
+see [Linux MUSL builds](docs/configuration.md#static-linux-musl-builds).
+macOS uses Apple's built-in system libraries; the
+[macOS compiler command](docs/configuration.md#building-on-macos-with-nix) also
+handles Nix environments that report `cc` or linker errors.
 
 The service uses `BAO_ADDR` from step 1 and listens at
 `http://127.0.0.1:8000/mcp`. Leave it running while your agent connects.
