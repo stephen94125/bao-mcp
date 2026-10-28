@@ -264,7 +264,7 @@ pub fn all() -> Vec<Definition> {
         ),
         grouped(
             "token",
-            "Operate native auth/token endpoints: lookup-self/lookup/lookup-accessor, create[/role], roles, renew/renew-self, revoke/revoke-self/revoke-accessor/revoke-orphan and accessors. Examples read path=lookup-self; write path=create data={\"policies\":[\"app\"],\"ttl\":\"1h\"}; write path=revoke-accessor data={\"accessor\":\"...\"}. Tokens in bodies are native operation targets, never authentication-header overrides.",
+            "Operate native auth/token endpoints: lookup-self/lookup/lookup-accessor, create[/role], roles, renew/renew-self, revoke/revoke-self/revoke-accessor/revoke-orphan and accessors. Examples read path=lookup-self; write path=create data={\"policies\":[\"app\"],\"ttl\":\"1h\"}; write path=revoke-accessor data={\"accessor\":\"...\"}. When creating tokens, retain the default policy: omit no_default_policy or set it to false; do not set no_default_policy to true. Tokens in bodies are native operation targets, never authentication-header overrides.",
             false,
             "Path relative to auth/token, for example create/app, roles/app, lookup-self or revoke-self.",
         ),
