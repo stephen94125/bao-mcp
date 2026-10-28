@@ -25,6 +25,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{borrow::Cow, sync::Arc, time::Instant};
 use tokio::sync::Semaphore;
+const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Clone)]
 pub struct App {
     pub backend: Backend,
@@ -212,7 +214,7 @@ pub fn router(app: App, config: &Config) -> Router {
         .with_json_response(true)
         .with_allowed_hosts(config.allowed_hosts.clone())
         .with_allowed_origins(config.allowed_origins.clone())
-        .with_max_request_body_bytes(2 * 1024 * 1024);
+        .with_max_request_body_bytes(MAX_REQUEST_BODY_BYTES);
     let service = StreamableHttpService::new(
         move || {
             Ok(McpServer {
@@ -226,9 +228,6 @@ pub fn router(app: App, config: &Config) -> Router {
         .route_service("/mcp", service.clone())
         .route_service("/mcp/", service)
         .layer(middleware::from_fn_with_state(app, authenticate))
-        .layer(tower_http::limit::RequestBodyLimitLayer::new(
-            2 * 1024 * 1024,
-        ))
         .route(
             "/healthz",
             axum::routing::get(|| async { Json(json!({"status":"ok"})) }),

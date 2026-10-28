@@ -59,6 +59,10 @@ async fn upstream(State(counts): State<Counts>, request: Request) -> axum::respo
         }
         "/v1/secret/data/allowed" => {
             counts.requests.fetch_add(1, Ordering::SeqCst);
+            if request.method() == http::Method::PUT {
+                let bytes = request.into_body().collect().await.unwrap().to_bytes();
+                return Json(json!({"data":{"received_bytes":bytes.len()}})).into_response();
+            }
             Json(json!({"data":{"data":{"client":if token.ends_with('a'){"A"}else{"B"}},"metadata":{"version":1}}})).into_response()
         }
         "/v1/secret/data/denied" => {
@@ -201,4 +205,77 @@ async fn health_is_local_and_credentials_cannot_be_smuggled_in_tool_args() {
     assert_eq!(body["result"]["isError"], true);
     assert_eq!(counts.requests.load(Ordering::SeqCst), 0);
     handle.abort();
+}
+
+async fn request_body_cases(cases: &[(usize, bool, bool)], forwarded: usize) {
+    let (_temp, app, counts, handle) = fixture().await;
+    for &(size, streamed, accepted) in cases {
+        let mut message = json!({
+            "jsonrpc":"2.0", "id":1, "method":"tools/call",
+            "params":{"name":"bao_request","arguments":{
+                "operation":"write", "path":"secret/data/allowed",
+                "data":{"data":{"payload":""}}
+            }}
+        });
+        let overhead = message.to_string().len();
+        message["params"]["arguments"]["data"]["data"]["payload"] =
+            Value::String("x".repeat(size - overhead));
+        let expected_forwarded = message["params"]["arguments"]["data"].to_string().len();
+        let bytes = axum::body::Bytes::from(message.to_string());
+        assert_eq!(bytes.len(), size);
+        let mut request = http::Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("host", "localhost")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("mcp-protocol-version", "2025-06-18")
+            .header("authorization", "Bearer synthetic-client-a");
+        let body = if streamed {
+            axum::body::Body::from_stream(tokio_stream::iter([
+                Ok::<_, std::io::Error>(bytes.slice(..size / 2)),
+                Ok(bytes.slice(size / 2..)),
+            ]))
+        } else {
+            request = request.header("content-length", size.to_string());
+            axum::body::Body::from(bytes)
+        };
+        let response = app
+            .clone()
+            .oneshot(request.body(body).unwrap())
+            .await
+            .unwrap();
+        if accepted {
+            assert_eq!(response.status(), http::StatusCode::OK);
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let result: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_ne!(result["result"]["isError"], true);
+            let returned: Value =
+                serde_json::from_str(result["result"]["content"][0]["text"].as_str().unwrap())
+                    .unwrap();
+            assert_eq!(returned["data"]["received_bytes"], expected_forwarded);
+        } else {
+            assert_eq!(response.status(), http::StatusCode::PAYLOAD_TOO_LARGE);
+        }
+    }
+    assert_eq!(counts.requests.load(Ordering::SeqCst), forwarded);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn request_body_limit_accepts_eight_mib() {
+    request_body_cases(
+        &[
+            (3 * 1024 * 1024, false, true),
+            (8 * 1024 * 1024, true, true),
+        ],
+        2,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn request_body_limit_rejects_larger_bodies() {
+    let size = 8 * 1024 * 1024 + 1;
+    request_body_cases(&[(size, false, false), (size, true, false)], 0).await;
 }

@@ -56,7 +56,7 @@ Use `BAO_CACERT` for a private Bao CA. Certificate and hostname verification are
 enabled by default. For a test server, `BAO_SKIP_VERIFY=true` bypasses both checks;
 enable it only when you accept that loss of peer verification. The option also
 accepts `1`/`0`; other values stop startup.
-The HTTP request limit is 2 MiB and the Bao response limit is 8 MiB. Upstream
+The HTTP request limit is 8 MiB and the Bao response limit is 8 MiB. Upstream
 redirects and automatic retries are disabled.
 
 ## Token scope and discovery

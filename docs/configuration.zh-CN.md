@@ -48,7 +48,7 @@ export MCP_ALLOWED_ORIGINS=https://agent-ui.example.com
 `bao-mcp.example.com:*`。Origin 则包含协议，例如 `https://agent-ui.example.com`。
 浏览器客户端可能需要配置对应 Origin；每个调用者仍需提供自己的 bearer token。
 
-私有 Bao CA 通过 `BAO_CACERT` 配置，默认验证 TLS 证书与主机名。HTTP 请求体上限为 2 MiB，
+私有 Bao CA 通过 `BAO_CACERT` 配置，默认验证 TLS 证书与主机名。HTTP 请求体上限为 8 MiB，
 Bao 响应上限为 8 MiB。上游请求不跟随重定向，也不自动重试。
 
 `BAO_SKIP_VERIFY=true` 可连接未受信任或主机名不匹配的测试服务器。它会关闭
