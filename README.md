@@ -1,3 +1,6 @@
+> [!WARNING]
+> You'd better have at least some understanding of how this system and OpenBao work, including their security configuration. Otherwise, you might as well just use `.env`; there's no need to make things so complicated.
+
 # Bao MCP
 
 [简体中文](README.zh-CN.md)
