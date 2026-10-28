@@ -1,0 +1,3 @@
+[mcp_servers.bao]
+url = "https://[IP_ADDRESS]/mcp"
+http_headers = { Authorization = "Bearer YOUR_BEARER_TOKEN" }
