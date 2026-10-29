@@ -26,6 +26,24 @@ TTL; increase the server configuration `max_lease_ttl` if a longer limit is need
 Use the resulting token in the MCP client's bearer-token setting. For individual
 administration steps, see [`bao/README.md`](bao/README.md).
 
+## Issue another token
+
+[`issue-bao-token.sh`](issue-bao-token.sh) issues a token without repeating namespace
+setup. It uses `BAO_TOKEN` or the Bao CLI login. The namespace defaults to
+`BAO_NAMESPACE` or `agent`, and the policy defaults to `admin`.
+
+```sh
+./scripts/issue-bao-token.sh
+./scripts/issue-bao-token.sh --policy vault-demo-readonly --ttl 8h
+./scripts/issue-bao-token.sh --token-file ./agent-admin.token
+```
+
+Use `--namespace` to select another namespace, or repeat `--policy` to attach
+multiple policies. The default TTL and explicit maximum are `1095d`. Tokens print
+to the terminal unless `--token-file` is provided; files use `0600` and existing
+files are refused. The English warning and red TTL use the actual server result.
+The namespace and policies must already exist, and Bao controls issuance rights.
+
 ## Setup permissions
 
 Use a root-namespace administrator token with rights on the paths below. For the
@@ -69,3 +87,9 @@ orphan service Token。请求 TTL 和最大总有效期默认为三年（`1095d`
 需要 `sudo`，Token 本身仍受 Bao 的签发条件限制。子 namespace 管理员只能管理自己的
 权限范围。错误会显示操作、namespace 和可取得的 HTTP 状态或 TLS／连接／超时等类别，
 不显示原始响应或凭证；后续步骤失败时保留已完成的 namespace／Policy 修改。
+
+另行签发 Token 可使用 `./scripts/issue-bao-token.sh`，不会重复建立 namespace。
+它使用 `BAO_TOKEN` 或 Bao CLI 登录，默认选择 `BAO_NAMESPACE` 或 `agent`，Policy
+为 `admin`；`--policy` 可重复指定。默认三年（`1095d`），以英文提示保管凭证及
+主机 TTL 上限，并以红字显示实际 TTL。默认输出到终端，使用 `--token-file` 才存档；
+namespace／Policy 需事先存在。

@@ -201,6 +201,8 @@ shared; grant selected PKI issuance roles separately, as shown in the
 Use the interactive helpers in `scripts/bao/` to apply a policy, create a
 reusable administrator login, issue a token, or enable additional engines.
 [Their README](scripts/bao/README.md) explains the inputs and commands.
+To issue another token after setup, use [`scripts/issue-bao-token.sh`](scripts/issue-bao-token.sh);
+[usage examples](scripts/README.md#issue-another-token) cover policies and optional file output.
 When policies change, `cache_refresh` updates the client's discovered tool list;
 Bao evaluates actual operations immediately.
 

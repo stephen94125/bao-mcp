@@ -184,6 +184,9 @@ PKI mount 由 namespace 共用，应另外按具体的签发角色授权，见[�
 或开启更多 engine。具体输入与命令见[脚本 README](scripts/bao/README.md)。
 Policy 改变后，可用 `cache_refresh` 刷新发现的工具清单；实际操作权限由 Bao 即时检查。
 
+设置完成后，可用 [`scripts/issue-bao-token.sh`](scripts/issue-bao-token.sh) 另行签发 Token；
+[使用示例](scripts/README.md#issue-another-token)包含 Policy 与可选文件输出。
+
 ## 延伸阅读
 
 - [工具与证书示例](docs/tools.zh-CN.md)
