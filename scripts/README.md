@@ -6,19 +6,22 @@ Bash, Python 3, and the Bao CLI.
 
 ```sh
 export BAO_ADDR=https://bao.example.com:8200
-./scripts/setup-bao-environment.sh --token-file ./agent-admin.token
+./scripts/setup-bao-environment.sh
 ```
 
 The script uses `BAO_TOKEN` if set; otherwise it asks for an administrator setup
 token with hidden input. It creates `agent` if absent, installs the bundled
 [`admin` policy](bao/policies/admin.hcl), and issues an orphan service token with
-`admin` and `default`. The requested TTL and explicit maximum are 24 hours.
+`admin` and `default`. The requested TTL and explicit maximum default to three years (`1095d`).
 Use `--namespace` and `--ttl` to change those values; `--help` lists options.
 
-The token is saved with mode `0600`. The destination directory must exist, and an
-existing file or symlink is refused. Existing namespace metadata and an identical
+The token is printed by default. Add `--token-file ./agent-admin.token` to save it
+with mode `0600` instead; the destination directory must exist, and an existing
+file or symlink is refused. Existing namespace metadata and an identical
 admin policy are preserved; a conflicting policy stops setup for review. Actual
-TTL remains subject to Bao limits.
+The actual TTL returned by Bao is displayed in red. The script prints an English
+warning to keep this three-year credential secure and to use the server-returned
+TTL; increase the server configuration `max_lease_ttl` if a longer limit is needed.
 
 Use the resulting token in the MCP client's bearer-token setting. For individual
 administration steps, see [`bao/README.md`](bao/README.md).
@@ -54,10 +57,11 @@ Bash、Python 3 及 Bao CLI。设置 `BAO_ADDR` 后执行上面的命令；有 `
 时直接使用，否则隐藏询问设置用管理员 Token。
 
 默认建立或复用 `agent`，安装 `admin` Policy，签发包含 `admin`、`default` 的
-orphan service Token。请求 TTL 和最大总有效期为 24 小时，可通过 `--namespace`
-和 `--ttl` 调整，实际 TTL 受 Bao 限制。Token 文件权限为 `0600`，禁止覆盖已有
-文件或符号链接；namespace 资料和相同 Policy 会保留，不同 Policy 会停止设置。
-将产生的 Token 配置到 MCP 客户端的 bearer-token 设置中。
+orphan service Token。请求 TTL 和最大总有效期默认为三年（`1095d`），可通过 `--namespace`
+和 `--ttl` 调整，实际 TTL 由 Bao 回应并以红字显示。默认输出 Token 到终端；
+指定 `--token-file` 才存档，文件权限为 `0600`，禁止覆盖已有文件或符号链接；namespace 资料和相同 Policy 会保留，不同 Policy 会停止设置。
+脚本会以英文警告妥善保管三年期凭证，实际以服务器回传的 TTL 为准；若需加长
+主机上限，应修改其 `max_lease_ttl`。将 Token 配置到 MCP 客户端的 bearer-token 设置中。
 
 设置所需的 root namespace ACL 路径见上表；`--namespace` 改名时应替换 `agent`。
 权限足够的 `super-admin` Token 可以使用，脚本直接执行实际 API 操作，由 Bao 授权。

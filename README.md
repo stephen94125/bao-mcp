@@ -64,7 +64,7 @@ first; keep its unseal shares and initial root token secure.
 From this repository's root:
 
 ```sh
-./scripts/setup-bao-environment.sh --token-file ./agent-admin.token
+./scripts/setup-bao-environment.sh
 ```
 
 The script uses `BAO_TOKEN` when set. Otherwise it asks for a setup token with
@@ -75,14 +75,19 @@ tokens (`sudo` on token creation). A suitably authorized `super-admin` token wor
 Bao evaluates the actual API permissions. See the [required permissions](scripts/README.md#setup-permissions).
 Run `unset BAO_TOKEN` if you prefer to enter the setup token at the hidden prompt.
 
+The default requested lifetime is three years. Keep the credential secure. The
+server-returned TTL is authoritative; extending the server limit requires changing
+its `max_lease_ttl` setting.
+
 The script:
 
 1. Creates `agent` if needed and preserves an existing namespace.
 2. Installs the namespace's `admin` policy from [admin.hcl](scripts/bao/policies/admin.hcl), or reuses an identical policy.
-3. Issues an orphan service token carrying `admin` and `default`, with a requested lifetime of 24 hours.
-4. Writes the token to `agent-admin.token` with mode `0600` and reports its actual lifetime.
+3. Issues an orphan service token carrying `admin` and `default`, with a requested lifetime of three years (`1095d`).
+4. Prints the token and the actual server-issued TTL in red. Add `--token-file ./agent-admin.token` to save it with mode `0600` instead of printing it.
 
-An existing token file or a different existing `admin` policy stops setup so you
+When `--token-file` is used, an existing token file stops setup. A different existing
+`admin` policy also stops setup so you
 can choose a new output file or inspect the policy. Other options:
 
 ```sh
@@ -130,7 +135,7 @@ Add an HTTP MCP server with these settings:
 | --- | --- |
 | Transport | Streamable HTTP |
 | URL | `http://127.0.0.1:8000/mcp` |
-| Authorization header | `Bearer <contents of agent-admin.token>` |
+| Authorization header | `Bearer <issued OpenBao token>` |
 
 Use your client's bearer-token or secret-setting mechanism to supply the token;
 the angle-bracket text above is a placeholder. Ask the client to list tools.

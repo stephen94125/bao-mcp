@@ -208,12 +208,12 @@ def publish(directory, filename, token):
 def main():
     parser = Parser(
         prog="scripts/setup-bao-environment.sh",
-        description="Prepare an agent namespace and save a finite-lived orphan admin service token.",
-        epilog="Requires BAO_ADDR, bao, and Python 3. Uses BAO_TOKEN or a hidden interactive setup/admin-token prompt; native API permissions authorize each operation. Existing namespace metadata and matching policy are preserved; a different admin policy stops setup. Token files are never overwritten.",
+        description="Prepare an agent namespace and issue a finite-lived orphan admin service token.",
+        epilog="Requires BAO_ADDR, bao, and Python 3. Uses BAO_TOKEN or a hidden interactive setup/admin-token prompt; native API permissions authorize each operation. Existing namespace metadata and matching policy are preserved; a different admin policy stops setup. Without --token-file, the issued token is printed to the terminal. Token files are never overwritten.",
     )
-    parser.add_argument("--token-file", required=True, help="New token file in an existing writable directory (mode 0600)")
+    parser.add_argument("--token-file", help="Save to a new token file in an existing writable directory (mode 0600); otherwise print the issued token")
     parser.add_argument("--namespace", default="agent", help="Single namespace segment (default: agent)")
-    parser.add_argument("--ttl", default="24h", help="Duration using s/m/h/d, including 1h30m (default: 24h; range: 1s to 1825d)")
+    parser.add_argument("--ttl", default="1095d", help="Duration using s/m/h/d, including 1h30m (default: 1095d, three years; range: 1s to 1825d)")
     arguments = parser.parse_args()
     namespace = arguments.namespace
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", namespace) or namespace.lower() in {"root", "sys", "audit", "auth", "cubbyhole", "identity"}:
@@ -223,22 +223,25 @@ def main():
         raise SetupError("Set BAO_ADDR to the initialized, unsealed OpenBao server address")
     if shutil.which("bao") is None:
         raise SetupError("bao is required")
-    if not arguments.token_file or any(ord(char) < 32 for char in arguments.token_file):
-        raise SetupError("Provide a valid token-file path")
-    destination = Path(os.path.abspath(arguments.token_file))
+    directory = None
+    destination = None
     try:
-        directory = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
-    except OSError:
-        raise SetupError("The token-file parent must be an existing writable directory")
-    try:
-        if not os.fstat(directory).st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH) or not os.access(destination.parent, os.W_OK | os.X_OK):
-            raise SetupError("The token-file parent must be an existing writable directory")
-        try:
-            os.stat(destination.name, dir_fd=directory, follow_symlinks=False)
-        except FileNotFoundError:
-            pass
-        else:
-            raise SetupError("The token file already exists. Choose a new token-file path")
+        if arguments.token_file is not None:
+            if not arguments.token_file or any(ord(char) < 32 for char in arguments.token_file):
+                raise SetupError("Provide a valid token-file path")
+            destination = Path(os.path.abspath(arguments.token_file))
+            try:
+                directory = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
+            except OSError:
+                raise SetupError("The token-file parent must be an existing writable directory")
+            if not os.fstat(directory).st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH) or not os.access(destination.parent, os.W_OK | os.X_OK):
+                raise SetupError("The token-file parent must be an existing writable directory")
+            try:
+                os.stat(destination.name, dir_fd=directory, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise SetupError("The token file already exists. Choose a new token-file path")
         try:
             expected = (Path(os.environ["BAO_SETUP_SCRIPT_DIR"]) / "bao" / "policies" / "admin.hcl").read_text()
         except (OSError, UnicodeError):
@@ -283,13 +286,19 @@ def main():
         data = json_object(verified.stdout, "OpenBao returned an invalid issued-token lookup").get("data")
         if not isinstance(data, dict) or data.get("id") != token or data.get("type") != "service" or data.get("orphan") is not True or not policies_valid(data.get("policies")) or not positive_integer(data.get("ttl")) or data["ttl"] > ttl or not positive_integer(data.get("explicit_max_ttl")) or data["explicit_max_ttl"] > math.ceil(seconds) or data.get("namespace_path") != namespace + "/":
             raise SetupError("Issued-token verification did not confirm the namespace, service, orphan, TTL, and policies")
-        publish(directory, destination.name, token)
+        if directory is not None:
+            publish(directory, destination.name, token)
         print("Namespace: " + namespace)
         print("Policy: admin")
-        print("Token file: " + str(destination))
-        print("Token TTL: " + str(ttl) + " seconds")
+        if destination is None:
+            print("Token: " + token)
+        else:
+            print("Token file: " + str(destination))
+        print("WARNING: This credential defaults to a three-year lifetime. Keep it secure. The Bao server has a default maximum TTL, so the TTL returned by the server below is authoritative. To extend it, change the server's `max_lease_ttl` setting.")
+        print("\033[31mToken TTL: " + str(ttl) + " seconds\033[0m")
     finally:
-        os.close(directory)
+        if directory is not None:
+            os.close(directory)
 
 
 try:

@@ -20,6 +20,7 @@ POLICY = ROOT / "scripts" / "bao" / "policies" / "admin.hcl"
 SETUP_TOKEN = "mock-setup-token-private"
 ISSUED_TOKEN = "mock-issued-token-private"
 DIAGNOSTIC = "mock-server-secret-private"
+WARNING = "WARNING: This credential defaults to a three-year lifetime. Keep it secure. The Bao server has a default maximum TTL, so the TTL returned by the server below is authoritative. To extend it, change the server's `max_lease_ttl` setting."
 MOCK = r'''#!/usr/bin/env python3
 import json
 import os
@@ -197,13 +198,15 @@ class SetupBaoEnvironment(unittest.TestCase):
     def state(self):
         return json.loads(self.state_path.read_text())
 
-    def run_setup(self, *extra, environment=None, target=None):
-        result = subprocess.run([str(SCRIPT), "--token-file", str(target or self.target), *extra], env=environment or self.environment, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, text=True)
-        self.assert_secret_safe(result.stdout + result.stderr)
+    def run_setup(self, *extra, environment=None, target=None, token_file=True):
+        file_options = ["--token-file", str(target or self.target)] if token_file else []
+        result = subprocess.run([str(SCRIPT), *file_options, *extra], env=environment or self.environment, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, text=True)
+        self.assert_secret_safe(result.stdout, allow_issued=not token_file)
+        self.assert_secret_safe(result.stderr)
         return result
 
-    def assert_secret_safe(self, output):
-        for secret in (SETUP_TOKEN, ISSUED_TOKEN, DIAGNOSTIC):
+    def assert_secret_safe(self, output, allow_issued=False):
+        for secret in (SETUP_TOKEN, DIAGNOSTIC) + (() if allow_issued else (ISSUED_TOKEN,)):
             self.assertNotIn(secret, output)
 
     def assert_failure(self, result):
@@ -217,13 +220,36 @@ class SetupBaoEnvironment(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.target.read_text(), ISSUED_TOKEN + "\n")
         self.assertEqual(stat.S_IMODE(self.target.stat().st_mode), 0o600)
-        self.assertEqual(result.stdout, "Namespace: agent\nPolicy: admin\nToken file: " + str(self.target) + "\nToken TTL: 3600 seconds\n")
+        self.assertEqual(result.stdout, "Namespace: agent\nPolicy: admin\nToken file: " + str(self.target) + "\n" + WARNING + "\n\033[31mToken TTL: 3600 seconds\033[0m\n")
         self.assertEqual(result.stderr, "")
         state = self.state()
         self.assertEqual(state["policy"], POLICY.read_text())
         self.assertEqual(sum(call[:2] == ["namespace", "create"] for call in state["calls"]), 1)
         self.assertEqual(sum(call[:2] == ["policy", "write"] for call in state["calls"]), 1)
         self.assertFalse(list(self.directory.glob(".bao-setup-*")))
+
+    def test_omitted_token_file_prints_only_issued_token_without_file(self):
+        result = self.run_setup(token_file=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "Namespace: agent\nPolicy: admin\nToken: " + ISSUED_TOKEN + "\n" + WARNING + "\n\033[31mToken TTL: 3600 seconds\033[0m\n")
+        self.assertEqual(result.stderr, "")
+        self.assertFalse(list(self.directory.glob("*.token")))
+        self.assertFalse(list(self.directory.glob(".bao-setup-*")))
+
+    def test_default_three_year_ttl_and_explicit_max_are_forwarded(self):
+        result = self.run_setup()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        creation = next(call for call in self.state()["calls"] if call[:2] == ["token", "create"])
+        self.assertIn("-ttl=1095d", creation)
+        self.assertIn("-explicit-max-ttl=1095d", creation)
+        self.assertIn(WARNING + "\n\033[31mToken TTL: 3600 seconds\033[0m\n", result.stdout)
+
+    def test_omitted_token_file_preserves_issued_token_checks(self):
+        self.write_state(lookup_override={"namespace_path": "wrong/"})
+        result = self.run_setup(token_file=False)
+        self.assert_failure(result)
+        self.assertNotIn(ISSUED_TOKEN, result.stdout + result.stderr)
+        self.assertFalse(list(self.directory.glob("*.token")))
 
     def test_cli_omits_create_token_type_but_lookup_must_confirm_service(self):
         self.write_state(omit_create_token_type=True)
@@ -420,7 +446,7 @@ class SetupBaoEnvironment(unittest.TestCase):
         result = self.run_setup("--namespace", "project-a", "--ttl", "1h")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Namespace: project-a\n", result.stdout)
-        self.assertIn("Token TTL: 120 seconds\n", result.stdout)
+        self.assertIn(WARNING + "\n\033[31mToken TTL: 120 seconds\033[0m\n", result.stdout)
 
     def test_malformed_or_failed_issuance_and_lookup_stay_private(self):
         for failure in ("issuance", "token_malformed", "verify"):
@@ -434,13 +460,13 @@ class SetupBaoEnvironment(unittest.TestCase):
         for override in ({"token_type": "batch"}, {"orphan": False}, {"lease_duration": 0}, {"lease_duration": 86401}, {"policies": ["root", "admin", "default"]}, {"policies": ["admin"]}, {"token_policies": ["root"]}, {"client_token": ""}):
             with self.subTest(override=override):
                 self.write_state(auth_override=override)
-                self.assert_failure(self.run_setup())
+                self.assert_failure(self.run_setup("--ttl", "24h"))
 
     def test_lookup_namespace_type_orphan_explicit_ttl_and_policies_are_checked(self):
         for override in ({"namespace_path": "wrong/"}, {"type": "batch"}, {"orphan": False}, {"ttl": 0}, {"ttl": 86401}, {"explicit_max_ttl": 0}, {"explicit_max_ttl": 86401}, {"policies": ["root", "admin"]}, {"id": "another-private-token"}):
             with self.subTest(override=override):
                 self.write_state(lookup_override=override)
-                self.assert_failure(self.run_setup())
+                self.assert_failure(self.run_setup("--ttl", "24h"))
 
     def test_raced_file_or_symlink_is_not_overwritten(self):
         for symlink in (False, True):
@@ -507,7 +533,7 @@ class SetupBaoEnvironment(unittest.TestCase):
         environment.pop("BAO_TOKEN")
         result = subprocess.run([str(SCRIPT), "--help"], env=environment, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
-        for option in ("--token-file", "--namespace", "--ttl", "BAO_TOKEN", "BAO_ADDR", "1825d"):
+        for option in ("--token-file", "--namespace", "--ttl", "BAO_TOKEN", "BAO_ADDR", "1095d", "1825d", "otherwise print"):
             self.assertIn(option, result.stdout)
         self.assertEqual(self.state()["calls"], [])
         self.assert_secret_safe(result.stdout + result.stderr)

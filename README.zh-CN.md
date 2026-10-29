@@ -59,7 +59,7 @@ bao status
 在本仓库根目录执行：
 
 ```sh
-./scripts/setup-bao-environment.sh --token-file ./agent-admin.token
+./scripts/setup-bao-environment.sh
 ```
 
 脚本优先使用环境变量 `BAO_TOKEN`；未设置时，会隐藏询问设置用 Token。
@@ -69,14 +69,17 @@ bao status
 也能使用，由 Bao 按实际 API 权限判定。详见[设置所需权限](scripts/README.md#setup-permissions)。
 如需改用隐藏输入，先执行 `unset BAO_TOKEN`。
 
+默认申请三年有效期，请保管好此凭证。实际以主机回传的 TTL 为准；若需加长主机
+允许的上限，应修改其 `max_lease_ttl` 设置。
+
 脚本会：
 
 1. 按需创建 `agent`，已有 namespace 会保留。
 2. 从 [admin.hcl](scripts/bao/policies/admin.hcl) 安装 namespace 内的 `admin` Policy；相同 Policy 直接沿用。
-3. 签发带有 `admin` 和 `default` Policy 的 orphan service token，请求有效期为 24 小时。
-4. 以 `0600` 权限写入 `agent-admin.token`，显示实际签发的有效期。
+3. 签发带有 `admin` 和 `default` Policy 的 orphan service token，请求有效期为三年（`1095d`）。
+4. 默认在终端显示 Token，以红字显示主机实际签发的 TTL；加上 `--token-file ./agent-admin.token` 才以 `0600` 权限存档，此时不显示 Token。
 
-目标 Token 文件已经存在，或已有 `admin` Policy 内容不同时，脚本会停止，方便你选择
+指定 `--token-file` 时，已有文件会使脚本停止；已有 `admin` Policy 内容不同时也会停止，方便你选择
 新文件或检查 Policy。也可以自行指定参数：
 
 ```sh
@@ -121,7 +124,7 @@ Bao 地址、namespace、监听地址和缓存都通过环境变量配置。远�
 | --- | --- |
 | 传输方式 | Streamable HTTP |
 | URL | `http://127.0.0.1:8000/mcp` |
-| Authorization 请求头 | `Bearer <agent-admin.token 的内容>` |
+| Authorization 请求头 | `Bearer <签发的 OpenBao Token>` |
 
 通过客户端的 bearer-token 或秘密配置机制提供实际 Token；表格里的尖括号是占位说明。
 连接后让客户端列出工具，MCP 会按该 Token 的 Bao 权限发现可用工具。
