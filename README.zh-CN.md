@@ -62,9 +62,12 @@ bao status
 ./scripts/setup-bao-environment.sh --token-file ./agent-admin.token
 ```
 
-脚本优先使用环境变量 `BAO_TOKEN`；未设置时，会在终端隐藏输入并询问 Root Token。
-本地试用请输入第一步 Bao 显示的 Root Token；已有服务器则使用它的 Root Token 完成设置。
-如果 `BAO_TOKEN` 当前是其他身份的凭证，先执行 `unset BAO_TOKEN`，即可改用隐藏输入。
+脚本优先使用环境变量 `BAO_TOKEN`；未设置时，会隐藏询问设置用 Token。
+本地试用可以使用第一步显示的 Root Token。已有服务器应使用 root namespace 内具备
+以下权限的管理员 Token：读取／建立 namespace、读取／安装其中的 `admin` Policy，
+以及签发 orphan Token（Token 建立端点需要 `sudo`）。权限足够的 `super-admin` Token
+也能使用，由 Bao 按实际 API 权限判定。详见[设置所需权限](scripts/README.md#setup-permissions)。
+如需改用隐藏输入，先执行 `unset BAO_TOKEN`。
 
 脚本会：
 
@@ -86,7 +89,7 @@ bao status
 新 Token 本身属于 `agent`；只改变 Root Token 的 namespace 设置，并不能把 Root Token
 变成受限的 namespace 管理员。
 
-初始 Root Token 用于设置；MCP 客户端使用生成的 namespace Token。请保管好 Token 文件。
+MCP 客户端使用生成的 namespace Token。请保管好 Token 文件。
 Orphan 表示该 Token 的生命周期独立于设置时使用的 Token。服务器 TTL 上限可能缩短请求，
 显式最大 TTL 也会限制它的总生命周期。
 

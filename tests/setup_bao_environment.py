@@ -69,20 +69,26 @@ def absent(path):
     sys.exit(2)
 
 
+def injected_failure(phase):
+    if state.get("failure_phase") != phase:
+        return
+    error = state.get("error")
+    if error is None:
+        fail(403)
+    sys.stdout.write(error.get("stdout", ""))
+    sys.stderr.write(error.get("stderr", ""))
+    sys.exit(error.get("returncode", 2))
+
+
 failure = state.get("failure")
 if command == ("token", "lookup") and os.environ["BAO_TOKEN"] == "mock-setup-token-private":
     assert namespace == ""
-    if failure == "root_network":
-        print("mock-server-secret-private: connection refused", file=sys.stderr)
-        sys.exit(2)
-    if failure == "root_malformed":
-        print("mock-server-secret-private invalid json")
-        sys.exit(0)
-    emit({"data": state.get("root_lookup", {"id": "mock-setup-token-private", "policies": ["root"]})})
+    emit({"data": {"id": "mock-setup-token-private", "policies": state.get("setup_policies", ["super-admin"]), "namespace_path": ""}})
 if command == ("read",):
     path = remaining[0]
     if path.startswith("sys/namespaces/"):
         assert namespace == ""
+        injected_failure("namespace_read")
         if failure == "namespace_network":
             print("mock-server-secret-private connection failed", file=sys.stderr)
             sys.exit(2)
@@ -98,6 +104,7 @@ if command == ("read",):
         emit({"data": {"path": path.rsplit("/", 1)[1] + "/", "custom_metadata": state["metadata"]}})
     assert path == "sys/policies/acl/admin"
     assert namespace == state["name"]
+    injected_failure("policy_read")
     if failure == "policy_forbidden":
         fail(403)
     if failure == "policy_malformed":
@@ -107,6 +114,7 @@ if command == ("read",):
     emit({"data": {"policy": state["policy"]}})
 if command == ("namespace", "create"):
     assert namespace == ""
+    injected_failure("namespace_create")
     state["namespace"] = True
     state["name"] = remaining[0]
     state["metadata"] = {}
@@ -115,12 +123,14 @@ if command == ("namespace", "create"):
 if command == ("policy", "write"):
     assert namespace == state["name"]
     assert remaining[0] == "admin"
+    injected_failure("policy_write")
     state["policy"] = Path(remaining[1]).read_text()
     save()
     print("Success! Uploaded policy: admin")
     sys.exit(0)
 if command == ("token", "create"):
     assert namespace == state["name"]
+    injected_failure("token_create")
     assert "-policy=admin" in args and "-orphan" in args and "-type=service" in args
     assert "-display-name=bao-mcp" in args and "-no-default-policy" not in args
     assert [arg.split("=", 1)[1] for arg in args if arg.startswith("-ttl=")] == [arg.split("=", 1)[1] for arg in args if arg.startswith("-explicit-max-ttl=")]
@@ -139,6 +149,7 @@ if command == ("token", "create"):
 if command == ("token", "lookup"):
     assert os.environ["BAO_TOKEN"] == "mock-issued-token-private"
     assert namespace == state["name"]
+    injected_failure("token_lookup")
     if failure == "verify":
         fail(403)
     data = {"id": "mock-issued-token-private", "type": "service", "orphan": True, "policies": ["admin", "default"], "ttl": state.get("issued_ttl", 3600), "explicit_max_ttl": state.get("issued_ttl", 3600), "namespace_path": state["name"] + "/"}
@@ -252,12 +263,105 @@ class SetupBaoEnvironment(unittest.TestCase):
                 self.assertFalse(self.state()["issued"])
                 self.assertFalse(any(call[:2] in (["namespace", "create"], ["policy", "write"]) for call in self.state()["calls"]))
 
-    def test_root_authorization_precedes_mutation(self):
-        for update in ({"root_lookup": {"policies": ["admin"]}}, {"root_lookup": {"policies": ["root"], "namespace_path": "child/"}}, {"failure": "root_network"}, {"failure": "root_malformed"}):
-            with self.subTest(update=update):
-                self.write_state(**update)
+    def test_non_root_setup_policy_needs_no_setup_token_lookup(self):
+        self.write_state(setup_policies=["super-admin"])
+        result = self.run_setup()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.state()["calls"]
+        self.assertEqual(calls[0], ["read", "-namespace=", "-format=json", "sys/namespaces/agent"])
+        lookups = [call for call in calls if call[:2] == ["token", "lookup"]]
+        self.assertEqual(lookups, [["token", "lookup", "-namespace=agent", "-format=json"]])
+        self.assertFalse(any("capabilities" in call for call in calls))
+
+    def test_actual_namespace_api_denial_precedes_mutation(self):
+        self.write_state(failure_phase="namespace_read")
+        result = self.run_setup()
+        self.assert_failure(result)
+        self.assertEqual(result.stderr, "Error: Namespace read failed (namespace: root, path: sys/namespaces/agent): HTTP 403, permission denied.\n")
+        self.assertEqual(len(self.state()["calls"]), 1)
+        self.assertFalse(self.state()["namespace"])
+
+    def test_later_api_failures_retain_operation_context_and_status(self):
+        cases = (
+            ("namespace_create", "Namespace creation", "root", "sys/namespaces/agent", 403),
+            ("policy_read", "Admin policy read", "agent", "sys/policies/acl/admin", 403),
+            ("policy_write", "Admin policy installation", "agent", "sys/policies/acl/admin", 403),
+            ("token_create", "Token issuance", "agent", "auth/token/create", 500),
+            ("token_lookup", "Issued-token verification", "agent", "auth/token/lookup-self", 401),
+        )
+        for phase, label, namespace, path, status in cases:
+            with self.subTest(phase=phase):
+                self.write_state(failure_phase=phase, error={"stderr": DIAGNOSTIC + "\nCode: " + str(status) + ". Errors:\nAuthorization: " + SETUP_TOKEN})
+                result = self.run_setup()
+                self.assert_failure(result)
+                self.assertIn(label + " failed (namespace: " + namespace + ", path: " + path + "): HTTP " + str(status), result.stderr)
+                self.assertEqual(self.state()["namespace"], phase != "namespace_create")
+                if phase in {"token_create", "token_lookup"}:
+                    self.assertEqual(self.state()["policy"], POLICY.read_text())
+
+    def test_cli_error_diagnostics_are_allowlisted_and_never_exposed(self):
+        cases = (
+            ("Code: 401. Errors:\n", "HTTP 401, authentication failed"),
+            ("Code: 403. Errors:\nCode: 404. Errors:\n", "HTTP 403, permission denied"),
+            ("Code: 503. Errors:\nserver is sealed\n", "HTTP 503, server sealed"),
+            ("Code: 503. Errors:\n", "HTTP 503, server unavailable"),
+            ("x509: certificate signed by unknown authority\n", "CLI exit 7, TLS error"),
+            ("remote error: tls: bad certificate\n", "CLI exit 7, TLS error"),
+            ("dial tcp: lookup example.invalid: no such host\n", "CLI exit 7, DNS resolution failed"),
+            ("dial tcp: connect: connection refused\n", "CLI exit 7, connection failed"),
+            ("context deadline exceeded\n", "CLI exit 7, connection timed out"),
+            ("server is sealed\n", "CLI exit 7, server sealed"),
+            ("service unavailable\n", "CLI exit 7, server unavailable"),
+            ("unknown failure\n", "CLI exit 7, unclassified CLI error"),
+        )
+        for diagnostic, expected in cases:
+            with self.subTest(expected=expected, diagnostic=diagnostic):
+                self.write_state(failure_phase="namespace_read", error={
+                    "returncode": 7,
+                    "stdout": "X-Vault-Token: " + ISSUED_TOKEN,
+                    "stderr": DIAGNOSTIC + "\nURL: GET https://example.invalid/private\n" + diagnostic + "Authorization: " + SETUP_TOKEN,
+                })
+                result = self.run_setup()
+                self.assert_failure(result)
+                self.assertEqual(result.stderr, "Error: Namespace read failed (namespace: root, path: sys/namespaces/agent): " + expected + ".\n")
+                self.assertEqual(len(self.state()["calls"]), 1)
+
+    def test_absence_requires_exit_two_and_confirmed_404_or_exact_no_value(self):
+        cases = (
+            {"returncode": 1, "stderr": "Code: 404. Errors:\n"},
+            {"returncode": 2, "stderr": "* Code: 404. Errors:\n"},
+            {"returncode": 2, "stderr": DIAGNOSTIC + "\nNo value found at sys/namespaces/agent\n"},
+        )
+        for error in cases:
+            with self.subTest(error=error):
+                self.write_state(failure_phase="namespace_read", error=error)
                 self.assert_failure(self.run_setup())
                 self.assertEqual(len(self.state()["calls"]), 1)
+                self.assertFalse(self.state()["namespace"])
+
+    def test_cli_process_launch_error_is_distinct_from_timeout(self):
+        custom = self.directory / "python-customization"
+        custom.mkdir()
+        (custom / "sitecustomize.py").write_text(
+            "import os, subprocess\n"
+            "original = subprocess.run\n"
+            "def run(command, *args, **kwargs):\n"
+            "    if command[0] == 'bao':\n"
+            "        if os.environ['MOCK_BAO_PROCESS_FAILURE'] == 'launch':\n"
+            "            raise OSError('mock-server-secret-private')\n"
+            "        raise subprocess.TimeoutExpired(command, 60, output=b'mock-issued-token-private', stderr=b'mock-server-secret-private')\n"
+            "    return original(command, *args, **kwargs)\n"
+            "subprocess.run = run\n"
+        )
+        for mode, diagnostic in (("launch", "CLI process launch error"), ("timeout", "CLI timed out after 60 seconds")):
+            with self.subTest(mode=mode):
+                environment = self.environment.copy()
+                environment["PYTHONPATH"] = str(custom)
+                environment["MOCK_BAO_PROCESS_FAILURE"] = mode
+                result = self.run_setup(environment=environment)
+                self.assert_failure(result)
+                self.assertEqual(result.stderr, "Error: Namespace read failed (namespace: root, path: sys/namespaces/agent): " + diagnostic + ".\n")
+                self.assertEqual(self.state()["calls"], [])
 
     def test_existing_file_is_not_overwritten(self):
         self.target.write_text("keep existing content")
@@ -371,11 +475,11 @@ class SetupBaoEnvironment(unittest.TestCase):
         captured = b""
         try:
             deadline = time.monotonic() + 8
-            while b"OpenBao setup token (root): " not in captured and time.monotonic() < deadline:
+            while b"OpenBao setup/admin token: " not in captured and time.monotonic() < deadline:
                 ready, _, _ = select.select([master], [], [], 0.1)
                 if ready:
                     captured += os.read(master, 4096)
-            self.assertIn(b"OpenBao setup token (root): ", captured)
+            self.assertIn(b"OpenBao setup/admin token: ", captured)
             os.write(master, (SETUP_TOKEN + "\n").encode())
             stdout, _ = process.communicate(timeout=15)
             while select.select([master], [], [], 0)[0]:

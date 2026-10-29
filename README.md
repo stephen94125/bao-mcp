@@ -67,10 +67,13 @@ From this repository's root:
 ./scripts/setup-bao-environment.sh --token-file ./agent-admin.token
 ```
 
-The script uses `BAO_TOKEN` when set. Otherwise it asks for a root token with
-hidden terminal input. For the local server, enter the root token printed in
-step 1. For an existing server, use its authorized root token for this setup.
-If `BAO_TOKEN` currently holds another identity, run `unset BAO_TOKEN` to use the prompt.
+The script uses `BAO_TOKEN` when set. Otherwise it asks for a setup token with
+hidden terminal input. For the local server, the root token printed in step 1
+works. For an existing server, use a root-namespace administrator token authorized
+to read/create the namespace, read/install its `admin` policy, and issue orphan
+tokens (`sudo` on token creation). A suitably authorized `super-admin` token works;
+Bao evaluates the actual API permissions. See the [required permissions](scripts/README.md#setup-permissions).
+Run `unset BAO_TOKEN` if you prefer to enter the setup token at the hidden prompt.
 
 The script:
 
@@ -92,9 +95,8 @@ descendants, effectively `/agent/*`. Writing `path "agent/*"` inside this policy
 would add another `agent/` segment. The issued token belongs to `agent`; merely
 changing a root token's namespace setting does not restrict that root token.
 
-The initial root token is a setup credential. Use the generated namespace token
-for the MCP client, and keep token files private. Its orphan status makes its
-lifetime independent of the token used for setup. Server TTL limits can shorten
+Use the generated namespace token for the MCP client, and keep token files private.
+Its orphan status makes its lifetime independent of the token used for setup. Server TTL limits can shorten
 the request, and the explicit maximum limits its total lifetime.
 
 ## 3. Build and start Bao MCP
